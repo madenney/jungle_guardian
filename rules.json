@@ -1,0 +1,23 @@
+[
+  {
+    "id": "duplicate_messages",
+    "number": 1,
+    "name": "Duplicate messages",
+    "description": "Three identical messages within one minute.",
+    "response": "{user_mention} timed out for {timeout_seconds} {timeout_unit}."
+  },
+  {
+    "id": "small_messages",
+    "number": 2,
+    "name": "Tiny messages",
+    "description": "Three messages smaller than five bytes within one minute.",
+    "response": "{user_mention} timed out for {timeout_seconds} {timeout_unit}."
+  },
+  {
+    "id": "link_or_image_messages",
+    "number": 3,
+    "name": "Links or images",
+    "description": "Three messages containing links or images within one minute.",
+    "response": "{user_mention} timed out for {timeout_seconds} {timeout_unit}."
+  }
+]
