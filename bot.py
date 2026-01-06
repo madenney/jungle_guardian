@@ -37,7 +37,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("guardian")
 
-DUP_WINDOW_SECONDS = 2.0
+DUP_WINDOW_SECONDS = 60.0
 DUP_COUNT = 3
 BASE_TIMEOUT_SECONDS = 1
 MAX_MESSAGE_LENGTH = 1900
