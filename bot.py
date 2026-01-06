@@ -43,7 +43,7 @@ BASE_TIMEOUT_SECONDS = 1
 MAX_MESSAGE_LENGTH = 1900
 SMALL_MESSAGE_MAX_BYTES = 5
 SMALL_MESSAGE_WINDOW_SECONDS = 60
-SMALL_MESSAGE_COUNT = 3
+SMALL_MESSAGE_COUNT = 5
 LINK_IMAGE_WINDOW_SECONDS = 60
 LINK_IMAGE_COUNT = 3
 LINK_REGEX = re.compile(r"(https?://\S+|www\.\S+)", re.IGNORECASE)
@@ -654,7 +654,7 @@ async def on_message(message: discord.Message) -> None:
         except Exception:
             logger.exception("Rule handler failed for %s", rule_id)
             triggered = False
-        if triggered and rule.get("stop_processing"):
+        if triggered:
             break
 
     await bot.process_commands(message)
