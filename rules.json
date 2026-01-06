@@ -7,17 +7,17 @@
     "response": "{user_mention} timed out for {timeout_seconds} {timeout_unit} for violating rule #{rule_number}."
   },
   {
-    "id": "link_or_image_messages",
+    "id": "small_messages",
     "number": 2,
-    "name": "Links or images",
-    "description": "Three messages containing links or images within one minute.",
+    "name": "Tiny messages",
+    "description": "Five messages smaller than five bytes within one minute.",
     "response": "{user_mention} timed out for {timeout_seconds} {timeout_unit} for violating rule #{rule_number}."
   },
   {
-    "id": "small_messages",
+    "id": "link_or_image_messages",
     "number": 3,
-    "name": "Tiny messages",
-    "description": "Five messages smaller than five bytes within one minute.",
+    "name": "Links or images",
+    "description": "Seven messages containing links or images within one minute.",
     "response": "{user_mention} timed out for {timeout_seconds} {timeout_unit} for violating rule #{rule_number}."
   }
 ]

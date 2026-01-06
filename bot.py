@@ -45,7 +45,7 @@ SMALL_MESSAGE_MAX_BYTES = 5
 SMALL_MESSAGE_WINDOW_SECONDS = 60
 SMALL_MESSAGE_COUNT = 5
 LINK_IMAGE_WINDOW_SECONDS = 60
-LINK_IMAGE_COUNT = 3
+LINK_IMAGE_COUNT = 7
 LINK_REGEX = re.compile(r"(https?://\S+|www\.\S+)", re.IGNORECASE)
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff"}
 
