@@ -1,7 +1,8 @@
 # Jungle Guardian (Discord Bot)
 
-Simple Discord bot that times out users for 10 seconds if they post
-3 duplicate messages in a row within 2 seconds.
+Moderation-focused Discord bot with configurable rules and escalating timeouts.
+Rules live in `rules.json`, and the timeout duration starts at 1 second and
+doubles after each violation.
 
 ## Requirements
 - Python 3.10+
@@ -17,6 +18,8 @@ Create `.env` with your token:
 ```ini
 DISCORD_TOKEN=your_token_here
 LOG_LEVEL=info
+LOG_STDOUT=true
+DISCORD_GUILD_ID=
 ```
 
 Run:
@@ -39,6 +42,16 @@ the service file. Update `.env` and run:
 sudo systemctl enable --now jungle-guardian
 ```
 
+Helper scripts:
+```bash
+./start.sh
+./stop.sh
+./restart.sh
+./reset_score.sh
+```
+
+Logs are written to `guardian.log` in the project directory.
+
 ## Rules
 Rules are defined in `rules.json` and evaluated for every message. Each rule
 needs:
@@ -56,6 +69,13 @@ Available `response` placeholders:
 
 After editing `rules.json`, restart the bot to load the changes.
 
+Only one rule triggers per message; the lowest rule number wins.
+
+Default rules in `rules.json`:
+- Rule 1: three identical messages in a row within one minute
+- Rule 2: three messages containing links or images within one minute
+- Rule 3: five messages smaller than five bytes within one minute
+
 ## Score Tracking
 Timeout durations scale per user and are stored in `score.json`. Each user
 starts at 1 second, and the timeout doubles after every violation. The file
@@ -64,7 +84,8 @@ history with user ID, rule ID, and timestamp.
 
 ## Slash Commands
 - `/rules` lists the configured rules
-- `/score` shows timeouts for you (or a specified user)
+- `/score` shows timeouts for all users (or a specified user). When a user
+  is provided, it includes their violation history with timestamps.
 
 Slash command updates can take a while to appear globally. For faster updates
 in a single server, set `DISCORD_GUILD_ID` in `.env` and restart the bot to
