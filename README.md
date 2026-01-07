@@ -47,7 +47,7 @@ Helper scripts:
 ./start.sh
 ./stop.sh
 ./restart.sh
-./reset_score.sh
+./scripts/reset_score.sh
 ```
 
 Logs are written to `guardian.log` in the project directory.
