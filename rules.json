@@ -16,8 +16,8 @@
   {
     "id": "link_or_image_messages",
     "number": 3,
-    "name": "Links or images",
-    "description": "Seven messages containing links or images within one minute.",
+    "name": "Links or media attachments",
+    "description": "Seven messages containing links or media attachments within one minute.",
     "response": "{user_mention} timed out for {timeout_seconds} {timeout_unit} for violating rule #{rule_number}."
   }
 ]

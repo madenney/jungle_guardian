@@ -48,6 +48,9 @@ LINK_IMAGE_WINDOW_SECONDS = 60
 LINK_IMAGE_COUNT = 7
 LINK_REGEX = re.compile(r"(https?://\S+|www\.\S+)", re.IGNORECASE)
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff"}
+VIDEO_EXTENSIONS = {".mp4", ".mov", ".webm", ".mkv", ".avi", ".mpeg", ".mpg", ".m4v"}
+AUDIO_EXTENSIONS = {".mp3", ".wav", ".ogg", ".flac", ".aac", ".m4a", ".opus", ".oga"}
+MEDIA_EXTENSIONS = IMAGE_EXTENSIONS | VIDEO_EXTENSIONS | AUDIO_EXTENSIONS
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -260,11 +263,11 @@ def _message_has_link_or_image(message: discord.Message) -> bool:
 
     for attachment in message.attachments:
         content_type = getattr(attachment, "content_type", None)
-        if content_type and content_type.startswith("image/"):
+        if content_type and content_type.startswith(("image/", "video/", "audio/")):
             return True
         filename = (attachment.filename or "").lower()
         _, ext = os.path.splitext(filename)
-        if ext in IMAGE_EXTENSIONS:
+        if ext in MEDIA_EXTENSIONS:
             return True
 
     return False

@@ -74,7 +74,7 @@ Only one rule triggers per message; the lowest rule number wins.
 Default rules in `rules.json`:
 - Rule 1: three identical messages in a row within one minute
 - Rule 2: five messages smaller than five bytes within one minute
-- Rule 3: seven messages containing links or images within one minute
+- Rule 3: seven messages containing links or media attachments within one minute
 
 ## Score Tracking
 Timeout durations scale per user and are stored in `score.json`. Each user
