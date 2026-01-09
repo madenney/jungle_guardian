@@ -75,6 +75,7 @@ Default rules in `rules.json`:
 - Rule 1: three identical messages in a row within one minute
 - Rule 2: five messages smaller than five bytes within one minute
 - Rule 3: seven messages containing links or media attachments within one minute
+- Rule 4: sending more than one @everyone in 24 hours
 
 ## Score Tracking
 Timeout durations scale per user and are stored in `score.json`. Each user

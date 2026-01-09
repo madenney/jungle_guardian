@@ -19,5 +19,12 @@
     "name": "Links or media attachments",
     "description": "Seven messages containing links or media attachments within one minute.",
     "response": "{user_mention} timed out for {timeout_seconds} {timeout_unit} for violating rule #{rule_number}."
+  },
+  {
+    "id": "everyone_mentions",
+    "number": 4,
+    "name": "Repeated @everyone mentions",
+    "description": "Sending more than one @everyone within 24 hours.",
+    "response": "{user_mention} timed out for {timeout_seconds} {timeout_unit} for violating rule #{rule_number}."
   }
 ]

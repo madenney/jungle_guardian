@@ -46,7 +46,10 @@ SMALL_MESSAGE_WINDOW_SECONDS = 60
 SMALL_MESSAGE_COUNT = 5
 LINK_IMAGE_WINDOW_SECONDS = 60
 LINK_IMAGE_COUNT = 7
+EVERYONE_WINDOW_SECONDS = 60 * 60 * 24
+EVERYONE_COUNT = 2
 LINK_REGEX = re.compile(r"(https?://\S+|www\.\S+)", re.IGNORECASE)
+EVERYONE_REGEX = re.compile(r"@everyone\b", re.IGNORECASE)
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff"}
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".webm", ".mkv", ".avi", ".mpeg", ".mpg", ".m4v"}
 AUDIO_EXTENSIONS = {".mp3", ".wav", ".ogg", ".flac", ".aac", ".m4a", ".opus", ".oga"}
@@ -61,6 +64,7 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 _user_state = {}
 _small_message_state = {}
 _link_image_state = {}
+_everyone_state = {}
 _rules = []
 _score = {}
 
@@ -273,6 +277,14 @@ def _message_has_link_or_image(message: discord.Message) -> bool:
     return False
 
 
+def _message_has_everyone(message: discord.Message) -> bool:
+    if not message.content:
+        return False
+    if not EVERYONE_REGEX.search(message.content):
+        return False
+    return bool(getattr(message, "mention_everyone", True))
+
+
 def _format_user_label(guild: discord.Guild, user_id: str, client: discord.Client) -> str:
     try:
         user_id_int = int(user_id)
@@ -424,6 +436,28 @@ async def _handle_link_or_image_messages(rule: dict, message: discord.Message, n
     _link_image_state[key] = []
     return await _apply_timeout(rule, message)
 
+
+async def _handle_everyone_mentions(rule: dict, message: discord.Message, now: float) -> bool:
+    has_everyone = _message_has_everyone(message)
+    key = (message.guild.id, message.author.id)
+    timestamps = _everyone_state.get(key, [])
+    timestamps = [ts for ts in timestamps if (now - ts) <= EVERYONE_WINDOW_SECONDS]
+
+    if has_everyone:
+        timestamps.append(now)
+
+    if not timestamps:
+        _everyone_state.pop(key, None)
+        return False
+
+    _everyone_state[key] = timestamps
+
+    if len(timestamps) < EVERYONE_COUNT:
+        return False
+
+    _everyone_state[key] = []
+    return await _apply_timeout(rule, message)
+
 RULES_FILE = Path(__file__).with_name("rules.json")
 _rules = _load_rules(RULES_FILE)
 logger.info("Loaded %s rules from %s", len(_rules), RULES_FILE)
@@ -438,6 +472,7 @@ _RULE_HANDLERS = {
     "duplicate_messages": _handle_duplicate_messages,
     "small_messages": _handle_small_messages,
     "link_or_image_messages": _handle_link_or_image_messages,
+    "everyone_mentions": _handle_everyone_mentions,
 }
 
 _synced_commands = False
