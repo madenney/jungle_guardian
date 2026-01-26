@@ -13,5 +13,5 @@ if [ "$(id -u)" -ne 0 ]; then
   fi
 fi
 
-$SUDO systemctl stop "$SERVICE_NAME"
+$SUDO systemctl disable --now "$SERVICE_NAME"
 $SUDO systemctl status "$SERVICE_NAME" --no-pager

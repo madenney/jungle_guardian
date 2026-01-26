@@ -452,10 +452,12 @@ async def _handle_everyone_mentions(rule: dict, message: discord.Message, now: f
 
     _everyone_state[key] = timestamps
 
+    if not has_everyone:
+        return False
+
     if len(timestamps) < EVERYONE_COUNT:
         return False
 
-    _everyone_state[key] = []
     return await _apply_timeout(rule, message)
 
 RULES_FILE = Path(__file__).with_name("rules.json")
