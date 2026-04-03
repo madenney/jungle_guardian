@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 try:
     from dotenv import load_dotenv
@@ -40,6 +40,8 @@ logger = logging.getLogger("guardian")
 DUP_WINDOW_SECONDS = 60.0
 DUP_COUNT = 3
 BASE_TIMEOUT_SECONDS = 1
+MAX_TIMEOUT_SECONDS = 2_419_200  # Discord's 28-day limit
+EXTENSION_CHECK_INTERVAL_MINUTES = 5
 MAX_MESSAGE_LENGTH = 1900
 SMALL_MESSAGE_MAX_BYTES = 5
 SMALL_MESSAGE_WINDOW_SECONDS = 60
@@ -199,6 +201,39 @@ def _record_timeout(
     )
 
 
+def _set_pending_extension(
+    guild_id: int,
+    user_id: int,
+    remaining_seconds: int,
+    chunk_expires_iso: str,
+    reason: str,
+) -> None:
+    entry = _get_score_entry(guild_id, user_id)
+    entry["pending_extension"] = {
+        "remaining_seconds": remaining_seconds,
+        "current_chunk_expires": chunk_expires_iso,
+        "reason": reason,
+    }
+
+
+def _clear_pending_extension(guild_id: int, user_id: int) -> None:
+    entry = _get_score_entry(guild_id, user_id)
+    entry.pop("pending_extension", None)
+
+
+def _format_duration(seconds: int) -> str:
+    if seconds < 60:
+        return f"{seconds} second{'s' if seconds != 1 else ''}"
+    if seconds < 3600:
+        minutes = seconds // 60
+        return f"{minutes} minute{'s' if minutes != 1 else ''}"
+    if seconds < 86400:
+        hours = seconds // 3600
+        return f"{hours} hour{'s' if hours != 1 else ''}"
+    days = seconds // 86400
+    return f"{days} day{'s' if days != 1 else ''}"
+
+
 def _render_response(rule: dict, message: discord.Message, timeout_seconds: int) -> str | None:
     template = rule.get("response", "")
     if not template:
@@ -314,9 +349,11 @@ def _format_violation_timestamp(timestamp: str) -> str:
 
 
 async def _apply_timeout(rule: dict, message: discord.Message) -> bool:
-    timeout_seconds = _get_timeout_seconds(message.guild.id, message.author.id)
+    true_timeout = _get_timeout_seconds(message.guild.id, message.author.id)
+    applied_seconds = min(true_timeout, MAX_TIMEOUT_SECONDS)
+    remaining_seconds = true_timeout - applied_seconds
     now_utc = datetime.now(timezone.utc)
-    until = now_utc + timedelta(seconds=timeout_seconds)
+    until = now_utc + timedelta(seconds=applied_seconds)
     reason = rule.get("description") or "Rule violation"
 
     try:
@@ -334,19 +371,37 @@ async def _apply_timeout(rule: dict, message: discord.Message) -> bool:
     _record_timeout(
         message.guild.id,
         message.author.id,
-        timeout_seconds,
+        true_timeout,
         rule.get("id"),
         now_utc.isoformat(),
     )
+
+    if remaining_seconds > 0:
+        _set_pending_extension(
+            message.guild.id,
+            message.author.id,
+            remaining_seconds,
+            until.isoformat(),
+            reason,
+        )
+        logger.info(
+            "Timeout for %s exceeds 28 days: applied %s, %s remaining",
+            message.author,
+            _format_duration(applied_seconds),
+            _format_duration(remaining_seconds),
+        )
+    else:
+        _clear_pending_extension(message.guild.id, message.author.id)
+
     _save_score(SCORE_FILE, _score)
     logger.info(
-        "Timed out %s for %s seconds (rule %s)",
+        "Timed out %s for %s (rule %s)",
         message.author,
-        timeout_seconds,
+        _format_duration(true_timeout),
         rule.get("id"),
     )
 
-    response = _render_response(rule, message, timeout_seconds)
+    response = _render_response(rule, message, true_timeout)
     if response:
         try:
             await message.channel.send(response)
@@ -480,6 +535,99 @@ _RULE_HANDLERS = {
 _synced_commands = False
 
 
+@tasks.loop(minutes=EXTENSION_CHECK_INTERVAL_MINUTES)
+async def check_timeout_extensions() -> None:
+    now_utc = datetime.now(timezone.utc)
+    changed = False
+
+    for guild_id_str, guild_entries in _score.items():
+        if not isinstance(guild_entries, dict):
+            continue
+        for user_id_str, entry in guild_entries.items():
+            if not isinstance(entry, dict):
+                continue
+            pending = entry.get("pending_extension")
+            if not pending or not isinstance(pending, dict):
+                continue
+
+            try:
+                expires = datetime.fromisoformat(pending["current_chunk_expires"])
+            except (KeyError, ValueError):
+                entry.pop("pending_extension", None)
+                changed = True
+                continue
+
+            if now_utc < expires - timedelta(seconds=60):
+                continue
+
+            remaining = pending.get("remaining_seconds", 0)
+            if remaining <= 0:
+                entry.pop("pending_extension", None)
+                changed = True
+                continue
+
+            next_chunk = min(remaining, MAX_TIMEOUT_SECONDS)
+            new_remaining = remaining - next_chunk
+            guild_id = int(guild_id_str)
+            user_id = int(user_id_str)
+
+            guild = bot.get_guild(guild_id)
+            if not guild:
+                continue
+            try:
+                member = guild.get_member(user_id) or await guild.fetch_member(user_id)
+            except discord.NotFound:
+                entry.pop("pending_extension", None)
+                changed = True
+                continue
+            except discord.HTTPException:
+                continue
+
+            # If timeout was removed well before expected expiry, a mod did it
+            if member.timed_out_until is None or member.timed_out_until <= now_utc:
+                if expires > now_utc + timedelta(minutes=EXTENSION_CHECK_INTERVAL_MINUTES + 1):
+                    logger.info(
+                        "Timeout for %s in guild %s removed early; cancelling extension chain",
+                        user_id, guild_id,
+                    )
+                    entry.pop("pending_extension", None)
+                    changed = True
+                    continue
+
+            until = now_utc + timedelta(seconds=next_chunk)
+            reason = pending.get("reason", "Extended timeout")
+            try:
+                await member.edit(timed_out_until=until, reason=reason)
+            except discord.Forbidden:
+                logger.warning("Missing permissions to extend timeout for %s", member)
+                continue
+            except discord.HTTPException as exc:
+                logger.warning("Failed to extend timeout for %s: %s", member, exc)
+                continue
+
+            logger.info(
+                "Extended timeout for %s: applied %s, %s remaining",
+                member,
+                _format_duration(next_chunk),
+                _format_duration(new_remaining) if new_remaining > 0 else "none",
+            )
+
+            if new_remaining > 0:
+                pending["remaining_seconds"] = new_remaining
+                pending["current_chunk_expires"] = until.isoformat()
+            else:
+                entry.pop("pending_extension", None)
+            changed = True
+
+    if changed:
+        _save_score(SCORE_FILE, _score)
+
+
+@check_timeout_extensions.before_loop
+async def before_check_timeout_extensions() -> None:
+    await bot.wait_until_ready()
+
+
 def _format_command_content(interaction: discord.Interaction) -> str | None:
     command = interaction.command
     command_name = None
@@ -538,6 +686,25 @@ async def on_ready() -> None:
         _synced_commands = True
     except Exception as exc:
         logger.warning("Failed to sync slash commands: %s", exc)
+
+    if not check_timeout_extensions.is_running():
+        check_timeout_extensions.start()
+        logger.info("Started timeout extension background task")
+
+
+@bot.event
+async def on_member_update(before: discord.Member, after: discord.Member) -> None:
+    if before.timed_out_until and not after.timed_out_until:
+        guild_id = after.guild.id
+        user_id = after.id
+        entry = _score.get(str(guild_id), {}).get(str(user_id))
+        if isinstance(entry, dict) and entry.get("pending_extension"):
+            logger.info(
+                "Timeout manually removed for %s in guild %s; cancelling extension chain",
+                user_id, guild_id,
+            )
+            entry.pop("pending_extension", None)
+            _save_score(SCORE_FILE, _score)
 
 
 @bot.listen("on_interaction")
@@ -638,7 +805,16 @@ async def score_command(
 
         if len(lines) == 1:
             lines.append("No violation history recorded yet.")
-        lines.append(f"Total: {timeouts} {label}. Next timeout: {next_timeout}s.")
+        lines.append(f"Total: {timeouts} {label}. Next timeout: {_format_duration(next_timeout)}.")
+
+        pending = entry.get("pending_extension")
+        if isinstance(pending, dict) and pending.get("remaining_seconds", 0) > 0:
+            remaining = pending["remaining_seconds"]
+            chunk_expires = pending.get("current_chunk_expires", "unknown")
+            lines.append(
+                f"Extended timeout active: {_format_duration(remaining)} remaining "
+                f"(current chunk expires {chunk_expires})"
+            )
 
         await _send_long_response(interaction, "\n".join(lines))
         return
@@ -668,7 +844,10 @@ async def score_command(
     for next_timeout, timeouts, user_id in entries:
         label = "timeout" if timeouts == 1 else "timeouts"
         name = _format_user_label(interaction.guild, user_id, interaction.client)
-        lines.append(f"{name} — {timeouts} {label}, next: {next_timeout}s")
+        user_entry = guild_scores.get(user_id, {})
+        pending = user_entry.get("pending_extension") if isinstance(user_entry, dict) else None
+        ext_marker = " [extended]" if isinstance(pending, dict) and pending.get("remaining_seconds", 0) > 0 else ""
+        lines.append(f"{name} — {timeouts} {label}, next: {_format_duration(next_timeout)}{ext_marker}")
 
     await _send_long_response(interaction, "\n".join(lines))
 
