@@ -18,7 +18,13 @@ set -euo pipefail
 REPO="${GUARDIAN_REPO:-/root/Projects/jungle_guardian}"
 SERVICE="${GUARDIAN_SERVICE:-jungle-guardian}"
 
-case "${SSH_ORIGINAL_COMMAND:-deploy}" in
+read -ra _argv <<< "${SSH_ORIGINAL_COMMAND:-deploy}"
+CMD="${_argv[0]:-deploy}"
+
+_gate_port() { grep -oP '^VOICE_GATE_PORT=\K.*' "$REPO/.env" 2>/dev/null || echo 8787; }
+_gate_token() { grep -oP '^VOICE_GATE_TOKEN=\K.*' "$REPO/.env" 2>/dev/null; }
+
+case "$CMD" in
   deploy)
     cd "$REPO"
     # Deploy target: the remote is authoritative. .env, score.json and the venv
@@ -55,11 +61,37 @@ case "${SSH_ORIGINAL_COMMAND:-deploy}" in
     journalctl -u "$SERVICE" -n 30 --no-pager
     ;;
   health)
-    port="$(grep -oP '^VOICE_GATE_PORT=\K.*' "$REPO/.env" 2>/dev/null || echo 8787)"
-    curl -sS --max-time 5 "http://127.0.0.1:${port:-8787}/health" && echo
+    curl -sS --max-time 5 "http://127.0.0.1:$(_gate_port)/health" && echo
+    ;;
+  gate)
+    # gate <channel_id> <user_id> <true|false> -- drives /voice/state the way the
+    # site will, for testing against a real voice channel. No new authority: this
+    # key can already deploy arbitrary repo code as root.
+    cid="${_argv[1]:-}"; uid="${_argv[2]:-}"; muted="${_argv[3]:-}"
+    [[ "$cid"   =~ ^[0-9]+$ ]]      || { echo "usage: gate <channel_id> <user_id> <true|false>" >&2; exit 2; }
+    [[ "$uid"   =~ ^[0-9]+$ ]]      || { echo "usage: gate <channel_id> <user_id> <true|false>" >&2; exit 2; }
+    [[ "$muted" =~ ^(true|false)$ ]] || { echo "usage: gate <channel_id> <user_id> <true|false>" >&2; exit 2; }
+    curl -sS --max-time 10 -X POST "http://127.0.0.1:$(_gate_port)/voice/state" \
+      -H "Authorization: Bearer $(_gate_token)" \
+      -H 'Content-Type: application/json' \
+      -d "{\"channel_id\":\"$cid\",\"updates\":[{\"user_id\":\"$uid\",\"muted\":$muted}],\"reason\":\"manual test\"}" \
+      && echo
+    ;;
+  clear)
+    # clear [channel_id] -- end-of-event path; omit the id to clear everything.
+    cid="${_argv[1]:-}"
+    if [[ -n "$cid" ]]; then
+      [[ "$cid" =~ ^[0-9]+$ ]] || { echo "usage: clear [channel_id]" >&2; exit 2; }
+      body="{\"channel_id\":\"$cid\",\"reason\":\"manual test clear\"}"
+    else
+      body='{"reason":"manual test clear"}'
+    fi
+    curl -sS --max-time 10 -X POST "http://127.0.0.1:$(_gate_port)/voice/clear" \
+      -H "Authorization: Bearer $(_gate_token)" \
+      -H 'Content-Type: application/json' -d "$body" && echo
     ;;
   *)
-    echo "guardian-deploy: allowed commands are deploy | status | logs | units | health" >&2
+    echo "guardian-deploy: allowed commands are deploy | status | logs | units | health | gate | clear" >&2
     exit 2
     ;;
 esac
