@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# Forced command for the guardian_deploy SSH key. Install on the sandbox EC2 at
+# /usr/local/bin/guardian-deploy and pin the key to it in authorized_keys:
+#
+#   restrict,command="/usr/local/bin/guardian-deploy" ssh-ed25519 AAAA... guardian deploy
+#
+# The key can run this script and nothing else, so a leaked key cannot become a
+# shell on a box that also hosts Lunar Melee prod. Same pattern as the
+# lunar_prod key, which is pinned to lm-dev-dump.
+#
+# Usage from a dev machine (see the guardian-deploy Host in ~/.ssh/config):
+#   ssh guardian-deploy            # defaults to deploy
+#   ssh guardian-deploy status
+#   ssh guardian-deploy logs
+#   ssh guardian-deploy health
+set -euo pipefail
+
+REPO="${GUARDIAN_REPO:-/root/jungle_guardian}"
+SERVICE="${GUARDIAN_SERVICE:-jungle-guardian}"
+
+case "${SSH_ORIGINAL_COMMAND:-deploy}" in
+  deploy)
+    cd "$REPO"
+    # Deploy target: the remote is authoritative. .env, score.json and the venv
+    # are gitignored, so they survive the reset.
+    git fetch --quiet origin main
+    echo "deploying $(git rev-parse --short origin/main): $(git log -1 --format=%s origin/main)"
+    git reset --hard --quiet origin/main
+    "$REPO/.venv/bin/pip" install --quiet --upgrade -r "$REPO/requirements.txt"
+    systemctl restart "$SERVICE"
+    sleep 3
+    systemctl is-active "$SERVICE"
+    ;;
+  status)
+    systemctl status --no-pager --lines=0 "$SERVICE"
+    ;;
+  logs)
+    journalctl -u "$SERVICE" -n 60 --no-pager
+    ;;
+  health)
+    port="$(grep -oP '^VOICE_GATE_PORT=\K.*' "$REPO/.env" 2>/dev/null || echo 8787)"
+    curl -sS --max-time 5 "http://127.0.0.1:${port:-8787}/health" && echo
+    ;;
+  *)
+    echo "guardian-deploy: allowed commands are deploy | status | logs | health" >&2
+    exit 2
+    ;;
+esac
