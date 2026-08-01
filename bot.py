@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import re
+import signal
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -10,6 +11,8 @@ from types import SimpleNamespace
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
+
+import voice_gate
 
 try:
     from dotenv import load_dotenv
@@ -61,7 +64,13 @@ intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
 
-bot = commands.Bot(command_prefix="!", intents=intents)
+class Guardian(commands.Bot):
+    async def close(self) -> None:
+        await voice_gate.shutdown(self)
+        await super().close()
+
+
+bot = Guardian(command_prefix="!", intents=intents)
 
 _user_state = {}
 _small_message_state = {}
@@ -691,6 +700,32 @@ async def on_ready() -> None:
         check_timeout_extensions.start()
         logger.info("Started timeout extension background task")
 
+    await voice_gate.start(bot)
+
+
+@bot.event
+async def on_voice_state_update(
+    member: discord.Member, before: discord.VoiceState, after: discord.VoiceState
+) -> None:
+    if member.bot:
+        return
+
+    before_id = before.channel.id if before.channel else None
+    after_id = after.channel.id if after.channel else None
+    if after_id is None or before_id == after_id:
+        return
+
+    try:
+        await voice_gate.handle_join(member)
+    except Exception:
+        logger.exception("Voice gate join handler failed for %s", member)
+
+
+@bot.event
+async def on_guild_channel_delete(channel: discord.abc.GuildChannel) -> None:
+    if isinstance(channel, (discord.VoiceChannel, discord.StageChannel)):
+        voice_gate.handle_channel_delete(channel)
+
 
 @bot.event
 async def on_member_update(before: discord.Member, after: discord.Member) -> None:
@@ -852,6 +887,60 @@ async def score_command(
     await _send_long_response(interaction, "\n".join(lines))
 
 
+def _is_voice_moderator(interaction: discord.Interaction) -> bool:
+    perms = getattr(interaction.user, "guild_permissions", None)
+    return bool(perms and (perms.mute_members or perms.manage_guild))
+
+
+@bot.tree.command(name="unmuteall", description="Unmute everyone in the gated voice channel.")
+async def unmuteall_command(interaction: discord.Interaction) -> None:
+    if interaction.guild is None:
+        await interaction.response.send_message("Use this command in a server.", ephemeral=True)
+        return
+    if not _is_voice_moderator(interaction):
+        await interaction.response.send_message(
+            "You need Mute Members or Manage Server to use this.", ephemeral=True
+        )
+        return
+
+    await interaction.response.defer()
+    cleared = await voice_gate.clear_all(bot, reason=f"/unmuteall by {interaction.user}")
+    voice_gate.set_enabled(False)
+    logger.info("%s ran /unmuteall; unmuted %s member(s)", interaction.user, cleared)
+    await interaction.followup.send(
+        f"Unmuted {cleared} member(s) and disabled the voice gate. "
+        f"Re-enable with `/mutegate enabled:True`."
+    )
+
+
+@bot.tree.command(name="mutegate", description="Enable or disable site-driven voice muting.")
+@app_commands.describe(enabled="True to let the site mute again, False to ignore it")
+async def mutegate_command(interaction: discord.Interaction, enabled: bool | None = None) -> None:
+    if interaction.guild is None:
+        await interaction.response.send_message("Use this command in a server.", ephemeral=True)
+        return
+
+    if enabled is None:
+        state = "enabled" if voice_gate.is_enabled() else "disabled"
+        configured = "configured" if voice_gate.is_configured() else "not configured"
+        await interaction.response.send_message(
+            f"Voice gate is {state} ({configured}), tracking {voice_gate.tracked_count()} user(s)."
+        )
+        return
+
+    if not _is_voice_moderator(interaction):
+        await interaction.response.send_message(
+            "You need Mute Members or Manage Server to use this.", ephemeral=True
+        )
+        return
+
+    voice_gate.set_enabled(enabled)
+    logger.info("%s set voice gate enabled=%s", interaction.user, enabled)
+    await interaction.response.send_message(
+        f"Voice gate {'enabled' if enabled else 'disabled'}."
+    )
+
+
 @bot.event
 async def on_message(message: discord.Message) -> None:
     if message.author.bot or message.guild is None:
@@ -879,5 +968,13 @@ async def on_message(message: discord.Message) -> None:
     await bot.process_commands(message)
 
 
+def _handle_sigterm(signum, frame) -> None:
+    # systemd stops the service with SIGTERM, which would otherwise kill the
+    # process outright and leave members server-muted. Route it into the same
+    # path as Ctrl-C so Guardian.close() gets to unmute everyone first.
+    raise KeyboardInterrupt
+
+
 if __name__ == "__main__":
+    signal.signal(signal.SIGTERM, _handle_sigterm)
     bot.run(TOKEN)
