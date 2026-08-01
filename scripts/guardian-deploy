@@ -26,6 +26,14 @@ case "${SSH_ORIGINAL_COMMAND:-deploy}" in
     git fetch --quiet origin main
     echo "deploying $(git rev-parse --short origin/main): $(git log -1 --format=%s origin/main)"
     git reset --hard --quiet origin/main
+    # Refresh this script from the repo. Not a weakening of the restriction:
+    # deploy already runs repo code as root (bot.py), so the repo is trusted
+    # root-equivalent either way. A leaked key still cannot escalate, because
+    # changing the forced command requires push access, not just the key.
+    if ! cmp -s "$REPO/scripts/guardian-deploy" /usr/local/bin/guardian-deploy; then
+      install -m 755 "$REPO/scripts/guardian-deploy" /usr/local/bin/guardian-deploy
+      echo "refreshed forced command"
+    fi
     "$REPO/.venv/bin/pip" install --quiet --upgrade -r "$REPO/requirements.txt"
     systemctl restart "$SERVICE"
     sleep 3
@@ -35,14 +43,23 @@ case "${SSH_ORIGINAL_COMMAND:-deploy}" in
     systemctl status --no-pager --lines=0 "$SERVICE"
     ;;
   logs)
-    journalctl -u "$SERVICE" -n 60 --no-pager
+    # The unit sends the bot's own output to guardian.log (StandardOutput=append),
+    # so journald holds only systemd lifecycle lines. Prefer the real log.
+    if [ -f "$REPO/guardian.log" ]; then
+      tail -n 60 "$REPO/guardian.log"
+    else
+      journalctl -u "$SERVICE" -n 60 --no-pager
+    fi
+    ;;
+  units)
+    journalctl -u "$SERVICE" -n 30 --no-pager
     ;;
   health)
     port="$(grep -oP '^VOICE_GATE_PORT=\K.*' "$REPO/.env" 2>/dev/null || echo 8787)"
     curl -sS --max-time 5 "http://127.0.0.1:${port:-8787}/health" && echo
     ;;
   *)
-    echo "guardian-deploy: allowed commands are deploy | status | logs | health" >&2
+    echo "guardian-deploy: allowed commands are deploy | status | logs | units | health" >&2
     exit 2
     ;;
 esac
