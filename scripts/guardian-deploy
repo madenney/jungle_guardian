@@ -15,7 +15,7 @@
 #   ssh guardian-deploy health
 set -euo pipefail
 
-REPO="${GUARDIAN_REPO:-/root/jungle_guardian}"
+REPO="${GUARDIAN_REPO:-/root/Projects/jungle_guardian}"
 SERVICE="${GUARDIAN_SERVICE:-jungle-guardian}"
 
 case "${SSH_ORIGINAL_COMMAND:-deploy}" in
