@@ -172,6 +172,40 @@ Failsafes:
   on with `/mutegate enabled:True`.
 - `/mutegate` with no argument reports current status.
 
+## Emoji converter (`tools/emojify.py`)
+
+A local dev tool. It takes images, gifs and video clips and produces files
+that Discord will accept as custom emoji — resized to 128px, re-encoded, and
+squeezed under the 256 KB cap.
+
+```bash
+sudo apt install ffmpeg gifsicle        # the only dependencies
+python3 tools/emojify.py emoji_src/ -o emoji_out/
+```
+
+No Python packages are needed, and nothing is added to `requirements.txt` —
+the bot host has no image toolchain and does not need one.
+
+```
+  ok    :big_noisy_gif:  gif 120f  128x128  2.1M -> 217K
+  ok    :smooth_gradient:  gif 75f  128x128  5.7M -> 93K  [degraded x1]
+  FAIL  %.png  no usable emoji name in the filename; rename it
+  CLASH big_noisy_gif__.png  -> :big_noisy_gif: already taken by Big Noisy GIF!!.gif
+```
+
+Output filenames are the emoji name, sanitised from the source filename to
+the `[a-z0-9_]{2,32}` Discord allows. Existing outputs are skipped unless
+`--force` is given, so rerunning over a growing folder only does new work.
+
+Animated sources are stepped down a quality ladder until they fit — framerate
+first, then colours, then lossy compression, and only then dimensions.
+`[degraded xN]` reports how far down that ladder a file had to go.
+
+Options: `--size` (max dimension), `--max-bytes` (byte budget), `--force`,
+`--dry-run`.
+
+`emoji_src/` and `emoji_out/` are gitignored.
+
 ## Get a Discord Bot Token
 1. Go to https://discord.com/developers/applications
 2. Click **New Application** and give it a name.

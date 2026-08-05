@@ -28,6 +28,12 @@ venv/
 env/
 .pytest_cache/
 
+# Emoji working directories (tools/emojify.py). Deliberately not committed:
+# the server deploy is a hard reset of this repo, and there is no reason to
+# ship a pile of gifs to the bot host.
+emoji_src/
+emoji_out/
+
 # Editor/OS
 .vscode/
 .idea/
