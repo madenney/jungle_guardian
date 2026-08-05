@@ -93,6 +93,83 @@ def emoji_name(stem: str) -> str:
     return name
 
 
+def load_names(path: Path) -> dict[str, str]:
+    """Read a `source filename = emoji_name` mapping.
+
+    Downloads are called tenor.gif and ezgif-4-a3f9c0.gif, which derive into
+    useless emoji names, so the mapping is how a human (or Claude, having
+    looked at the previews) assigns real ones without renaming files.
+    """
+    mapping: dict[str, str] = {}
+    if not path.exists():
+        return mapping
+    for lineno, raw in enumerate(path.read_text().splitlines(), 1):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        source, sep, wanted = line.partition("=")
+        if not sep:
+            print(f"  warn  {path.name}:{lineno}: no '=', ignoring", file=sys.stderr)
+            continue
+        mapping[source.strip()] = wanted.strip()
+    return mapping
+
+
+def write_names_stub(sources: list[Path], path: Path) -> None:
+    lines = [
+        "# emojify name mapping: <source filename> = <emoji name>",
+        "# Names are 2-32 characters of a-z, 0-9 and _. Anything else is",
+        "# rewritten. Delete a line to fall back to the derived name.",
+        "",
+    ]
+    for src in sources:
+        lines.append(f"{src.name} = {emoji_name(src.stem) or 'rename_me'}")
+    path.write_text("\n".join(lines) + "\n")
+
+
+def ffmpeg_source(src: Path, animated: bool, tmp: Path) -> list[str]:
+    """ffmpeg input arguments for a source file.
+
+    Animated webp is the one format ffmpeg cannot open, so it gets exploded
+    to a png sequence first and fed back in as one. Everything else is just
+    the file. Both the converter and the previewer go through here so the
+    workaround only exists once.
+    """
+    if not (animated and src.suffix.lower() == ".webp"):
+        return ["-i", str(src)]
+    frames_dir = tmp / "frames"
+    frames_dir.mkdir(exist_ok=True)
+    pattern, src_fps = explode_webp(src, frames_dir)
+    return ["-framerate", f"{src_fps:.3f}", "-i", pattern]
+
+
+def make_preview(src: Path, dst: Path, frames: int) -> None:
+    """Render a look-at-me image: one frame if static, a 3-frame strip if not.
+
+    A strip rather than a single frame because the first frame of a reaction
+    gif is very often a fade-in or a blank plate, which tells you nothing
+    about what the gif actually is.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        source = ffmpeg_source(src, frames > 1, Path(tmpdir))
+        if frames <= 1:
+            run([
+                "ffmpeg", "-y", "-v", "error", *source, "-frames:v", "1",
+                "-vf", "scale=192:192:force_original_aspect_ratio=decrease",
+                "-f", "image2", "-c:v", "png", str(dst),
+            ])
+            return
+        mid, last = frames // 2, frames - 1
+        run([
+            "ffmpeg", "-y", "-v", "error", *source,
+            "-vf", (f"select='eq(n\\,0)+eq(n\\,{mid})+eq(n\\,{last})',"
+                    "scale=192:192:force_original_aspect_ratio=decrease,"
+                    "pad=192:192:-1:-1:color=gray,tile=3x1"),
+            "-fps_mode", "passthrough", "-frames:v", "1",
+            "-f", "image2", "-c:v", "png", str(dst),
+        ])
+
+
 def human(size: int) -> str:
     if size < 1024:
         return f"{size}B"
@@ -223,21 +300,15 @@ def squeeze_gif(path: Path, colors: int, lossy: int) -> None:
     run(cmd)
 
 
-def convert(src: Path, out_dir: Path, budget: int, box: int) -> dict:
+def convert(src: Path, out_dir: Path, budget: int, box: int, name: str) -> dict:
     width, height, frames = probe(src)
     animated = frames > 1
-    name = emoji_name(src.stem)
     dst = out_dir / f"{name}{ANIMATED_EXT if animated else STATIC_EXT}"
 
     with tempfile.TemporaryDirectory() as tmp:
         work = Path(tmp) / f"work{dst.suffix}"
 
-        source = ["-i", str(src)]
-        if animated and src.suffix.lower() == ".webp":
-            frames_dir = Path(tmp) / "frames"
-            frames_dir.mkdir()
-            pattern, src_fps = explode_webp(src, frames_dir)
-            source = ["-framerate", f"{src_fps:.3f}", "-i", pattern]
+        source = ffmpeg_source(src, animated, Path(tmp))
 
         if animated:
             ladder = [r for r in ANIMATED_LADDER if r[0] <= box] or [ANIMATED_LADDER[-1]]
@@ -321,6 +392,12 @@ def main() -> int:
                         help="reconvert even if the output already exists")
     parser.add_argument("-n", "--dry-run", action="store_true",
                         help="list what would be converted and exit")
+    parser.add_argument("--names", type=Path, default=Path("names.txt"),
+                        help="'<file> = <emoji name>' mapping (default: names.txt)")
+    parser.add_argument("--write-names", action="store_true",
+                        help="write a stub mapping for every source and exit")
+    parser.add_argument("--preview", type=Path, metavar="DIR",
+                        help="render look-at-me images for naming, then exit")
     args = parser.parse_args()
 
     for binary in ("ffmpeg", "ffprobe", "gifsicle"):
@@ -334,9 +411,45 @@ def main() -> int:
         print("nothing to convert", file=sys.stderr)
         return 1
 
+    if args.write_names:
+        if args.names.exists():
+            print(f"error: {args.names} exists; delete it or pass --names",
+                  file=sys.stderr)
+            return 1
+        write_names_stub(sources, args.names)
+        print(f"wrote {args.names} with {len(sources)} entries -- edit the names")
+        return 0
+
+    if args.preview:
+        args.preview.mkdir(parents=True, exist_ok=True)
+        for index, src in enumerate(sources, 1):
+            try:
+                _, _, frames = probe(src)
+                make_preview(src, args.preview / f"{index:03d}.png", frames)
+            except ConversionError as exc:
+                print(f"  FAIL  {src.name}  {exc}")
+                continue
+            kind = f"{frames}f" if frames > 1 else "still"
+            print(f"  {index:03d}.png  {src.name}  ({kind})")
+        print(f"\n{len(sources)} preview(s) -> {args.preview}/")
+        return 0
+
+    names = load_names(args.names)
+    if names:
+        print(f"using names from {args.names}")
+    unused = set(names) - {s.name for s in sources}
+    for stale in sorted(unused):
+        print(f"  warn  {args.names.name}: '{stale}' matches no source file")
+
+    def resolve(src: Path) -> tuple[str, str | None]:
+        wanted = names.get(src.name)
+        return emoji_name(wanted) if wanted else emoji_name(src.stem), wanted
+
     if args.dry_run:
         for src in sources:
-            print(f"  {src}  ->  {emoji_name(src.stem) or '(no usable name)'}")
+            name, wanted = resolve(src)
+            via = "  (names.txt)" if wanted else ""
+            print(f"  {src}  ->  {':' + name + ':' if name else '(no usable name)'}{via}")
         print(f"\n{len(sources)} file(s)")
         return 0
 
@@ -344,9 +457,11 @@ def main() -> int:
     ok = skipped = failed = 0
 
     for src in sources:
-        name = emoji_name(src.stem)
+        name, wanted = resolve(src)
+        if wanted and name != wanted:
+            print(f"  warn  '{wanted}' is not a legal emoji name, using '{name}'")
         if not name:
-            print(f"  FAIL  {src.name}  no usable emoji name in the filename; rename it")
+            print(f"  FAIL  {src.name}  no usable name; add it to {args.names.name}")
             failed += 1
             continue
         if name in seen:
@@ -364,7 +479,7 @@ def main() -> int:
             continue
 
         try:
-            result = convert(src, args.out, args.max_bytes, args.size)
+            result = convert(src, args.out, args.max_bytes, args.size, name)
         except ConversionError as exc:
             print(f"  FAIL  {src.name}  {exc}")
             failed += 1

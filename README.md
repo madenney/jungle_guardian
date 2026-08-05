@@ -200,6 +200,32 @@ Output filenames are the emoji name, sanitised from the source filename to
 the `[a-z0-9_]{2,32}` Discord allows. Existing outputs are skipped unless
 `--force` is given, so rerunning over a growing folder only does new work.
 
+### Naming
+
+Downloads are called `tenor.gif` and `ezgif-4-a3f9c0.gif`, so the derived
+name is usually useless. `names.txt` overrides it without renaming files:
+
+```ini
+# <source filename> = <emoji name>
+tenor.gif = copium
+ezgif-4-a3f9c0.gif = jungle_hype
+```
+
+Illegal names are rewritten with a warning (`Jungle HYPE!!` → `jungle_hype`),
+and entries matching no source file are reported. Generate a stub with every
+source pre-filled using `--write-names`.
+
+To decide names you have to see the files, which is what `--preview` is for:
+
+```bash
+python3 tools/emojify.py emoji_src/ --preview /tmp/previews
+```
+
+It writes one numbered image per source and prints the number-to-filename
+mapping. Animated sources render as a 3-frame strip (start, middle, end),
+because the first frame of a reaction gif is usually a fade-in that tells you
+nothing. Point Claude Code at that folder and it can name the whole batch.
+
 Animated sources are stepped down a quality ladder until they fit — framerate
 first, then colours, then lossy compression, and only then dimensions.
 `[degraded xN]` reports how far down that ladder a file had to go.
