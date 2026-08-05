@@ -4,7 +4,8 @@
 A local dev tool, not part of the bot. It shells out to ffmpeg and gifsicle
 rather than using Pillow so that nothing lands in requirements.txt -- the
 server deploy installs that file, and the bot has no business carrying an
-image toolchain.
+image toolchain. Pillow is used if present, but only for animated webp,
+which ffmpeg cannot demux.
 
     python3 tools/emojify.py emoji_src/ -o emoji_out/
 
@@ -100,12 +101,63 @@ def human(size: int) -> str:
     return f"{size / (1024 * 1024):.1f}M"
 
 
+def pillow():
+    """Pillow, or None. Optional: only animated webp needs it."""
+    try:
+        import PIL.Image  # noqa: F401
+    except ImportError:
+        return None
+    import PIL.Image
+    return PIL.Image
+
+
+def probe_webp(path: Path) -> tuple[int, int, int] | None:
+    """Probe a webp with Pillow, or None if Pillow is unavailable."""
+    image = pillow()
+    if image is None:
+        return None
+    with image.open(path) as im:
+        return im.width, im.height, getattr(im, "n_frames", 1)
+
+
+def explode_webp(src: Path, out_dir: Path) -> tuple[str, float]:
+    """Dump an animated webp to a png sequence. Returns (pattern, fps).
+
+    ffmpeg 6 ships a webp decoder but no animated-webp demuxer, so it reads
+    exactly one frame and then writes nothing. Saved gifs off Tenor and
+    Discord are routinely animated webp, so this is not an edge case. Frames
+    go out as png rather than straight to gif to keep the full colour range
+    for ffmpeg's palettegen further down.
+    """
+    image = pillow()
+    if image is None:
+        raise ConversionError(
+            "animated webp needs Pillow (pip install Pillow) -- "
+            "ffmpeg cannot demux it")
+    durations: list[int] = []
+    with image.open(src) as im:
+        count = getattr(im, "n_frames", 1)
+        for index in range(count):
+            im.seek(index)
+            durations.append(im.info.get("duration", 0) or 0)
+            im.convert("RGBA").save(out_dir / f"f_{index:05d}.png")
+    # Pillow reports per-frame duration in ms; 0 means the file did not say,
+    # in which case browsers settle on roughly 10fps.
+    average = sum(durations) / len(durations) if durations else 0
+    fps = 1000.0 / average if average > 0 else 10.0
+    return str(out_dir / "f_%05d.png"), max(min(fps, 50.0), 1.0)
+
+
 def probe(path: Path) -> tuple[int, int, int]:
     """Return (width, height, frame_count).
 
     Frames are counted by decoding rather than trusting the container's
     metadata, because gif and webp both routinely report nb_frames=N/A.
     """
+    if path.suffix.lower() == ".webp":
+        probed = probe_webp(path)
+        if probed is not None:
+            return probed
     out = run([
         "ffprobe", "-v", "error", "-select_streams", "v:0", "-count_frames",
         "-show_entries", "stream=width,height,nb_read_frames",
@@ -135,9 +187,9 @@ def fit(width: int, height: int, box: int) -> tuple[int, int]:
     return max(int(width * scale), 1), max(int(height * scale), 1)
 
 
-def encode_static(src: Path, dst: Path, width: int, height: int) -> None:
+def encode_static(source: list[str], dst: Path, width: int, height: int) -> None:
     run([
-        "ffmpeg", "-y", "-v", "error", "-i", str(src),
+        "ffmpeg", "-y", "-v", "error", *source,
         "-frames:v", "1",
         "-vf", f"scale={width}:{height}:flags=lanczos",
         "-f", "image2", "-c:v", "png", str(dst),
@@ -145,7 +197,7 @@ def encode_static(src: Path, dst: Path, width: int, height: int) -> None:
 
 
 def encode_animated(
-    src: Path, dst: Path, width: int, height: int, fps: int, colors: int
+    source: list[str], dst: Path, width: int, height: int, fps: int, colors: int
 ) -> None:
     """Transcode to gif with a generated palette.
 
@@ -158,7 +210,7 @@ def encode_animated(
         f"[s1][p]paletteuse=dither=bayer:bayer_scale=3"
     )
     run([
-        "ffmpeg", "-y", "-v", "error", "-i", str(src),
+        "ffmpeg", "-y", "-v", "error", *source,
         "-filter_complex", chain, "-loop", "0", "-f", "gif", str(dst),
     ])
 
@@ -180,11 +232,18 @@ def convert(src: Path, out_dir: Path, budget: int, box: int) -> dict:
     with tempfile.TemporaryDirectory() as tmp:
         work = Path(tmp) / f"work{dst.suffix}"
 
+        source = ["-i", str(src)]
+        if animated and src.suffix.lower() == ".webp":
+            frames_dir = Path(tmp) / "frames"
+            frames_dir.mkdir()
+            pattern, src_fps = explode_webp(src, frames_dir)
+            source = ["-framerate", f"{src_fps:.3f}", "-i", pattern]
+
         if animated:
             ladder = [r for r in ANIMATED_LADDER if r[0] <= box] or [ANIMATED_LADDER[-1]]
             for rung, (dim, fps, colors, lossy) in enumerate(ladder):
                 target_w, target_h = fit(width, height, dim)
-                encode_animated(src, work, target_w, target_h, fps, colors)
+                encode_animated(source, work, target_w, target_h, fps, colors)
                 squeeze_gif(work, colors, lossy)
                 size = work.stat().st_size
                 if size <= budget:
@@ -198,7 +257,17 @@ def convert(src: Path, out_dir: Path, budget: int, box: int) -> dict:
             ladder = [d for d in STATIC_LADDER if d <= box] or [STATIC_LADDER[-1]]
             for rung, dim in enumerate(ladder):
                 target_w, target_h = fit(width, height, dim)
-                encode_static(src, work, target_w, target_h)
+                try:
+                    encode_static(source, work, target_w, target_h)
+                except ConversionError:
+                    # Without Pillow we cannot tell an animated webp from a
+                    # still one, so it lands here and ffmpeg fails with a
+                    # message about empty streams. Say the useful thing.
+                    if src.suffix.lower() == ".webp" and pillow() is None:
+                        raise ConversionError(
+                            "webp failed to decode; if it is animated, ffmpeg "
+                            "cannot demux it -- pip install Pillow") from None
+                    raise
                 size = work.stat().st_size
                 if size <= budget:
                     break

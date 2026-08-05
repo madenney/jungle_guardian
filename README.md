@@ -184,7 +184,10 @@ python3 tools/emojify.py emoji_src/ -o emoji_out/
 ```
 
 No Python packages are needed, and nothing is added to `requirements.txt` —
-the bot host has no image toolchain and does not need one.
+the bot host has no image toolchain and does not need one. The one exception
+is **animated WebP**, which ffmpeg cannot demux; install Pillow
+(`pip install Pillow`) if you save gifs off Tenor or Discord, since those
+arrive as `.webp`. Everything else works without it.
 
 ```
   ok    :big_noisy_gif:  gif 120f  128x128  2.1M -> 217K
