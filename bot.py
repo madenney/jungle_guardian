@@ -905,20 +905,14 @@ async def score_command(
     await _send_long_response(interaction, "\n".join(lines))
 
 
-def _is_ban_moderator(interaction: discord.Interaction) -> bool:
-    perms = getattr(interaction.user, "guild_permissions", None)
-    return bool(perms and (perms.ban_members or perms.manage_guild))
-
-
 @bot.tree.command(name="bans", description="Report how many people are banned from this server.")
 async def bans_command(interaction: discord.Interaction) -> None:
+    # Open to everyone on purpose. The reply is a single number that reveals
+    # nothing about who was banned or why, and it is posted in the channel
+    # anyway, so gating who may ask for it would only mean one person relaying
+    # a public figure to everyone else.
     if interaction.guild is None:
         await interaction.response.send_message("Use this command in a server.", ephemeral=True)
-        return
-    if not _is_ban_moderator(interaction):
-        await interaction.response.send_message(
-            "You need Ban Members or Manage Server to use this.", ephemeral=True
-        )
         return
 
     # Deferred because the ban list paginates: a server with a lot of them
