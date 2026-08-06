@@ -6,6 +6,8 @@
 # Runtime data
 score.json
 score.json.tmp
+census.json
+census.tmp
 
 # Logs
 *.log

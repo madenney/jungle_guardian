@@ -83,10 +83,38 @@ starts at 1 second, and the timeout doubles after every violation. The file
 is updated whenever a timeout succeeds. Each entry also records a violations
 history with user ID, rule ID, and timestamp.
 
+## Member Census
+Once a day at 00:05 UTC the bot records how many members each server has into
+`census.json`, keyed by date:
+
+```json
+{
+  "1401234567890123456": {
+    "name": "The Jungle",
+    "days": {
+      "2026-08-05": { "total": 1230, "humans": 1225, "bots": 5, "at": "..." }
+    }
+  }
+}
+```
+
+Discord keeps no history of member counts, so this only knows what it has been
+running long enough to see — there is no way to backfill. A snapshot is also
+taken at startup if the day has no entry yet, which covers a bot that was down
+over midnight; longer outages simply leave gaps.
+
+`/members` reports the current count and the change over the last 1, 7 and 30
+days. Where a window has no entry it falls back to the closest earlier one and
+reports the span it actually covers, so `31 days` means 31 days.
+
+There is no online/offline count — that needs the privileged presences intent,
+which the bot does not request.
+
 ## Slash Commands
 - `/rules` lists the configured rules
 - `/score` shows timeouts for all users (or a specified user). When a user
   is provided, it includes their violation history with timestamps.
+- `/members` shows the member count and its recent trend
 
 Slash command updates can take a while to appear globally. For faster updates
 in a single server, set `DISCORD_GUILD_ID` in `.env` and restart the bot to

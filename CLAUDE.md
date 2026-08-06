@@ -7,6 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 A Discord moderation bot for the Jungle Melee server. Two mostly independent concerns:
 
 - **`bot.py`** — watches messages, matches them against rules in `rules.json`, applies escalating timeouts persisted in `score.json`.
+- **`census.py`** — a daily member-count snapshot into `census.json`. Fully independent of the other two.
 - **`voice_gate.py`** — a loopback-only HTTP endpoint that lets junglemelee.com mute/unmute members in the commentary voice channel based on whether they have the stream fullscreen. Same process, same gateway connection, separate module.
 
 ## Commands
@@ -57,8 +58,14 @@ The manual-mute rule has a deliberate asymmetry worth understanding before chang
 
 Fail-open is what makes in-memory state acceptable: `shutdown()` clears everything, `start()` resets the fixed channel if one is configured, and `handle_join` catches whatever slipped through. The SIGTERM handler in `bot.py` exists solely so `systemctl stop` routes through `Guardian.close()` rather than killing the process with people still muted.
 
+## Census
+
+`census.py` writes one entry per guild per UTC day. The only thing worth knowing before touching it: **Discord exposes no history for member counts**, so an unrecorded day is unrecoverable. That is why `start()` records immediately instead of waiting for the next `tasks.loop(time=...)` firing, and why the day key makes a repeat call a no-op rather than a duplicate — the catch-up has to be safe to run on every reconnect.
+
+The human/bot split comes from the member cache and is omitted rather than zeroed if that cache is empty. There is no presence count; the presences intent is not requested and adding it would be a privileged-intent change.
+
 ## Operational notes
 
-- The systemd unit runs as root, so `score.json` and `guardian.log` end up root-owned. Running `python bot.py` as your user afterward will fail to write the score file — stop the service first, or `chown` those files.
+- The systemd unit runs as root, so `score.json`, `census.json` and `guardian.log` end up root-owned. Running `python bot.py` as your user afterward will fail to write the score file — stop the service first, or `chown` those files.
 - `DISCORD_GUILD_ID` in `.env` scopes slash-command sync to one guild (near-instant) instead of globally (slow to propagate).
 - The bot needs the Message Content intent enabled in the Discord developer portal and the Moderate Members permission in the guild.

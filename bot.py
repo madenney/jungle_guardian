@@ -12,6 +12,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
+import census
 import voice_gate
 
 try:
@@ -66,6 +67,7 @@ intents.members = True
 
 class Guardian(commands.Bot):
     async def close(self) -> None:
+        census.stop()
         await voice_gate.shutdown(self)
         await super().close()
 
@@ -701,6 +703,7 @@ async def on_ready() -> None:
         logger.info("Started timeout extension background task")
 
     await voice_gate.start(bot)
+    await census.start(bot)
 
 
 @bot.event
@@ -885,6 +888,50 @@ async def score_command(
         lines.append(f"{name} — {timeouts} {label}, next: {_format_duration(next_timeout)}{ext_marker}")
 
     await _send_long_response(interaction, "\n".join(lines))
+
+
+@bot.tree.command(name="members", description="Show the member count and how it has moved.")
+async def members_command(interaction: discord.Interaction) -> None:
+    if interaction.guild is None:
+        await interaction.response.send_message("Use this command in a server.", ephemeral=True)
+        return
+
+    guild = interaction.guild
+    total = guild.member_count or len(guild.members)
+    lines = [f"**{guild.name}** — {total:,} members"]
+
+    if guild.members:
+        bots = sum(1 for member in guild.members if member.bot)
+        lines.append(f"{total - bots:,} humans · {bots:,} bots")
+
+    history = census.series(guild.id)
+    changes = []
+    seen = set()
+    for days_back, label in ((1, "1 day"), (7, "7 days"), (30, "30 days")):
+        change = census.compare(guild.id, days_back)
+        # Early on, every window falls back to the same oldest entry; showing
+        # that one delta three times under three labels would be noise.
+        if change is None or change["since"] in seen:
+            continue
+        seen.add(change["since"])
+        # A fallback to an older entry means the span is not the one asked
+        # for, so report what it really covers instead of quietly relabelling.
+        span = change["span"]
+        name = label if span == days_back else f"{span} days"
+        changes.append(f"`{name:>8}`  {change['delta']:+,}")
+
+    if changes:
+        lines.append("")
+        lines.extend(changes)
+
+    if history:
+        day_count = len(history)
+        noun = "day" if day_count == 1 else "days"
+        lines.append(f"\n{day_count} {noun} recorded, since {history[0][0]}")
+    else:
+        lines.append("\nNo history recorded yet.")
+
+    await interaction.response.send_message("\n".join(lines))
 
 
 def _is_voice_moderator(interaction: discord.Interaction) -> bool:
