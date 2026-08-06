@@ -910,8 +910,8 @@ def _format_ban(entry: discord.BanEntry) -> str:
     return f"`{entry.user.id}`  **{entry.user}** — {reason}"
 
 
-def _count_bans(count: int) -> str:
-    return f"{count:,} ban" if count == 1 else f"{count:,} bans"
+def _count_bans(count: int, qualifier: str = "") -> str:
+    return f"**Number of bans{qualifier}:** {count:,}"
 
 
 @bot.tree.command(name="bans", description="Count the bans on this server, or look one up.")
@@ -970,16 +970,20 @@ async def bans_command(
         if not entries:
             await interaction.followup.send(f"No ban matches '{search}'.", ephemeral=True)
             return
-        header = f"**{_count_bans(len(entries))}** matching '{search}'"
-    elif not entries:
-        await interaction.followup.send(f"No one is banned in **{guild.name}**.", ephemeral=True)
-        return
+        header = _count_bans(len(entries), f" matching '{search}'")
     else:
-        header = f"**{guild.name}** — {_count_bans(len(entries))}"
+        # Zero is reported in the same shape as any other count rather than as
+        # a special sentence -- it still says plainly that nobody is banned,
+        # and it cannot be mistaken for the permission error.
+        header = _count_bans(len(entries))
 
     # The count is the answer; the names are opt-in. Dumping a long list every
     # time buries the number, and a ban list is not something to spray around
     # unless it was asked for.
+    if not entries:
+        await interaction.followup.send(header, ephemeral=True)
+        return
+
     if not full and not search:
         await interaction.followup.send(
             f"{header}\nUse `/bans full:True` to see who.", ephemeral=True
