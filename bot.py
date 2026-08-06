@@ -922,21 +922,24 @@ async def bans_command(interaction: discord.Interaction) -> None:
         return
 
     # Deferred because the ban list paginates: a server with a lot of them
-    # will not answer inside Discord's three second window.
-    await interaction.response.defer(ephemeral=True)
+    # will not answer inside Discord's three second window. Public, so the
+    # count lands in the channel for everyone -- and every reply after this
+    # point has to be public too, or the public "thinking" placeholder is
+    # left stranded with the real answer hidden.
+    await interaction.response.defer()
     try:
         count = sum([1 async for _ in interaction.guild.bans(limit=None)])
     except discord.Forbidden:
-        await interaction.followup.send(_BAN_PERMISSION_HINT, ephemeral=True)
+        await interaction.followup.send(_BAN_PERMISSION_HINT)
         return
     except discord.HTTPException as exc:
-        await interaction.followup.send(f"Could not read the ban list: {exc}", ephemeral=True)
+        await interaction.followup.send(f"Could not read the ban list: {exc}")
         return
 
     # Zero reports in the same shape as any other count. It says plainly that
     # nobody is banned while staying distinct from the permission error above,
     # so a zero can never mean "could not look".
-    await interaction.followup.send(f"**Number of bans:** {count:,}", ephemeral=True)
+    await interaction.followup.send(f"**Number of bans:** {count:,}")
 
 
 @bot.tree.command(name="members", description="Show the member count and how it has moved.")

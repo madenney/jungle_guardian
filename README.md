@@ -116,7 +116,8 @@ which the bot does not request.
   is provided, it includes their violation history with timestamps.
 - `/members` shows the member count and its recent trend
 - `/bans` reports the number of people banned from the server, and nothing
-  else. Restricted to Ban Members / Manage Server, and answers ephemerally.
+  else. Restricted to Ban Members / Manage Server to run, but the count is
+  posted publicly in the channel.
 
 `/bans` needs the bot to have **Ban Members**. Discord offers no read-only
 view of the ban list, so the permission that lets Guardian read it is the same
