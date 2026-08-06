@@ -115,9 +115,10 @@ which the bot does not request.
 - `/score` shows timeouts for all users (or a specified user). When a user
   is provided, it includes their violation history with timestamps.
 - `/members` shows the member count and its recent trend
-- `/bans` lists banned users, or looks one up by user ID or partial name.
-  Restricted to Ban Members / Manage Server, and always answers ephemerally —
-  the ban list is moderator business.
+- `/bans` reports how many people are banned, and says so plainly when nobody
+  is. `full:True` adds the names, and `search:` looks one up by user ID or
+  partial name. Restricted to Ban Members / Manage Server, and always answers
+  ephemerally — the ban list is moderator business.
 
 `/bans` needs the bot to have **Ban Members**. Discord offers no read-only
 view of the ban list, so the permission that lets Guardian read it is the same

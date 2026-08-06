@@ -910,9 +910,18 @@ def _format_ban(entry: discord.BanEntry) -> str:
     return f"`{entry.user.id}`  **{entry.user}** — {reason}"
 
 
-@bot.tree.command(name="bans", description="List banned users, or look one up.")
-@app_commands.describe(search="A user ID, or part of a name")
-async def bans_command(interaction: discord.Interaction, search: str | None = None) -> None:
+def _count_bans(count: int) -> str:
+    return f"{count:,} ban" if count == 1 else f"{count:,} bans"
+
+
+@bot.tree.command(name="bans", description="Count the bans on this server, or look one up.")
+@app_commands.describe(
+    search="A user ID, or part of a name",
+    full="Also print every banned user, not just the count",
+)
+async def bans_command(
+    interaction: discord.Interaction, search: str | None = None, full: bool = False
+) -> None:
     if interaction.guild is None:
         await interaction.response.send_message("Use this command in a server.", ephemeral=True)
         return
@@ -959,16 +968,23 @@ async def bans_command(interaction: discord.Interaction, search: str | None = No
         needle = search.casefold()
         entries = [e for e in entries if needle in str(e.user).casefold()]
         if not entries:
-            await interaction.followup.send(
-                f"No ban matches '{search}'.", ephemeral=True
-            )
+            await interaction.followup.send(f"No ban matches '{search}'.", ephemeral=True)
             return
-        header = f"**{len(entries)} ban(s) matching '{search}'**"
+        header = f"**{_count_bans(len(entries))}** matching '{search}'"
     elif not entries:
-        await interaction.followup.send(f"No one is banned in {guild.name}.", ephemeral=True)
+        await interaction.followup.send(f"No one is banned in **{guild.name}**.", ephemeral=True)
         return
     else:
-        header = f"**{len(entries)} ban(s) in {guild.name}**"
+        header = f"**{guild.name}** — {_count_bans(len(entries))}"
+
+    # The count is the answer; the names are opt-in. Dumping a long list every
+    # time buries the number, and a ban list is not something to spray around
+    # unless it was asked for.
+    if not full and not search:
+        await interaction.followup.send(
+            f"{header}\nUse `/bans full:True` to see who.", ephemeral=True
+        )
+        return
 
     entries.sort(key=lambda entry: str(entry.user).casefold())
     lines = [header, ""]
