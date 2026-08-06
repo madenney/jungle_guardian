@@ -115,16 +115,17 @@ which the bot does not request.
 - `/score` shows timeouts for all users (or a specified user). When a user
   is provided, it includes their violation history with timestamps.
 - `/members` shows the member count and its recent trend
-- `/bans` reports how many people are banned, and says so plainly when nobody
-  is. `full:True` adds the names, and `search:` looks one up by user ID or
-  partial name. Restricted to Ban Members / Manage Server, and always answers
-  ephemerally — the ban list is moderator business.
+- `/bans` reports the number of people banned from the server, and nothing
+  else. Restricted to Ban Members / Manage Server, and answers ephemerally.
 
 `/bans` needs the bot to have **Ban Members**. Discord offers no read-only
 view of the ban list, so the permission that lets Guardian read it is the same
-one that would let it ban; there is no narrower option. The API also returns
-no ban timestamps, so `/bans` can show who and why but never when — that only
-lives in the audit log, which Discord expires after 45 days.
+one that would let it ban; there is no narrower option. Guardian contains no
+code that bans, unbans, or names anyone — `guild.bans()` is counted and
+discarded.
+
+A missing permission and an empty ban list are deliberately different
+replies, so a reported `0` always means zero and never "could not look".
 
 Slash command updates can take a while to appear globally. For faster updates
 in a single server, set `DISCORD_GUILD_ID` in `.env` and restart the bot to

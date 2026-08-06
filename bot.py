@@ -905,23 +905,8 @@ def _is_ban_moderator(interaction: discord.Interaction) -> bool:
     return bool(perms and (perms.ban_members or perms.manage_guild))
 
 
-def _format_ban(entry: discord.BanEntry) -> str:
-    reason = (entry.reason or "").strip() or "no reason recorded"
-    return f"`{entry.user.id}`  **{entry.user}** — {reason}"
-
-
-def _count_bans(count: int, qualifier: str = "") -> str:
-    return f"**Number of bans{qualifier}:** {count:,}"
-
-
-@bot.tree.command(name="bans", description="Count the bans on this server, or look one up.")
-@app_commands.describe(
-    search="A user ID, or part of a name",
-    full="Also print every banned user, not just the count",
-)
-async def bans_command(
-    interaction: discord.Interaction, search: str | None = None, full: bool = False
-) -> None:
+@bot.tree.command(name="bans", description="Report how many people are banned from this server.")
+async def bans_command(interaction: discord.Interaction) -> None:
     if interaction.guild is None:
         await interaction.response.send_message("Use this command in a server.", ephemeral=True)
         return
@@ -931,32 +916,11 @@ async def bans_command(
         )
         return
 
-    # Always ephemeral: who is banned and why is moderator business, and this
-    # is easy to run in a public channel by accident.
+    # Deferred because the ban list paginates: a server with a lot of them
+    # will not answer inside Discord's three second window.
     await interaction.response.defer(ephemeral=True)
-    guild = interaction.guild
-    search = (search or "").strip()
-
-    # A banned user is by definition not in the guild, so Discord's user picker
-    # will not offer them. An ID goes straight to the single-ban endpoint;
-    # anything else is matched against the names in the full list.
-    if search.isdigit():
-        try:
-            entry = await guild.fetch_ban(discord.Object(id=int(search)))
-        except discord.NotFound:
-            await interaction.followup.send(f"`{search}` is not banned.", ephemeral=True)
-            return
-        except discord.Forbidden:
-            await interaction.followup.send(_BAN_PERMISSION_HINT, ephemeral=True)
-            return
-        except discord.HTTPException as exc:
-            await interaction.followup.send(f"Could not check that ID: {exc}", ephemeral=True)
-            return
-        await interaction.followup.send(_format_ban(entry), ephemeral=True)
-        return
-
     try:
-        entries = [entry async for entry in guild.bans(limit=None)]
+        count = sum([1 async for _ in interaction.guild.bans(limit=None)])
     except discord.Forbidden:
         await interaction.followup.send(_BAN_PERMISSION_HINT, ephemeral=True)
         return
@@ -964,36 +928,10 @@ async def bans_command(
         await interaction.followup.send(f"Could not read the ban list: {exc}", ephemeral=True)
         return
 
-    if search:
-        needle = search.casefold()
-        entries = [e for e in entries if needle in str(e.user).casefold()]
-        if not entries:
-            await interaction.followup.send(f"No ban matches '{search}'.", ephemeral=True)
-            return
-        header = _count_bans(len(entries), f" matching '{search}'")
-    else:
-        # Zero is reported in the same shape as any other count rather than as
-        # a special sentence -- it still says plainly that nobody is banned,
-        # and it cannot be mistaken for the permission error.
-        header = _count_bans(len(entries))
-
-    # The count is the answer; the names are opt-in. Dumping a long list every
-    # time buries the number, and a ban list is not something to spray around
-    # unless it was asked for.
-    if not entries:
-        await interaction.followup.send(header, ephemeral=True)
-        return
-
-    if not full and not search:
-        await interaction.followup.send(
-            f"{header}\nUse `/bans full:True` to see who.", ephemeral=True
-        )
-        return
-
-    entries.sort(key=lambda entry: str(entry.user).casefold())
-    lines = [header, ""]
-    lines.extend(_format_ban(entry) for entry in entries)
-    await _send_long_response(interaction, "\n".join(lines), ephemeral=True)
+    # Zero reports in the same shape as any other count. It says plainly that
+    # nobody is banned while staying distinct from the permission error above,
+    # so a zero can never mean "could not look".
+    await interaction.followup.send(f"**Number of bans:** {count:,}", ephemeral=True)
 
 
 @bot.tree.command(name="members", description="Show the member count and how it has moved.")
