@@ -699,11 +699,16 @@ async def on_ready() -> None:
     try:
         if guild_id:
             guild = discord.Object(id=int(guild_id))
-            await bot.tree.sync(guild=guild)
-            logger.info("Synced slash commands to guild %s", guild_id)
+            # Every command here is declared globally. Syncing a guild without
+            # copying them across pushes the guild's own (empty) list, which
+            # succeeds while registering nothing -- the failure mode is a log
+            # line saying "synced" next to a server with no commands in it.
+            bot.tree.copy_global_to(guild=guild)
+            synced = await bot.tree.sync(guild=guild)
+            logger.info("Synced %s slash commands to guild %s", len(synced), guild_id)
         else:
-            await bot.tree.sync()
-            logger.info("Synced slash commands globally")
+            synced = await bot.tree.sync()
+            logger.info("Synced %s slash commands globally", len(synced))
         _synced_commands = True
     except Exception as exc:
         logger.warning("Failed to sync slash commands: %s", exc)
