@@ -3,6 +3,7 @@ import logging
 import os
 import re
 import signal
+import sys
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -30,8 +31,32 @@ if not TOKEN:
 LOG_LEVEL = os.getenv("LOG_LEVEL", "info").upper()
 LOG_FILE = Path(__file__).with_name("guardian.log")
 LOG_TO_STDOUT = os.getenv("LOG_STDOUT", "true").lower() in {"1", "true", "yes", "on"}
+
+
+def _stream_is_file(stream, path: Path) -> bool:
+    """True when `stream` is already an open handle on `path`.
+
+    The systemd unit redirects both standard streams into guardian.log with
+    `append:`, and `logging.StreamHandler()` writes to stderr, so on the
+    server the console handler and the file handler are two routes into one
+    file -- every line recorded twice. Nothing in the environment says so:
+    systemd sets JOURNAL_STREAM when it redirects to the journal, but not
+    when it redirects to a file, so the inode is what has to be compared.
+    """
+    try:
+        stream_stat = os.fstat(stream.fileno())
+    except (AttributeError, OSError, ValueError):
+        return False
+    try:
+        file_stat = path.stat()
+    except OSError:
+        return False
+    return (stream_stat.st_dev, stream_stat.st_ino) == (file_stat.st_dev, file_stat.st_ino)
+
+
+# Built first so the log file exists before the comparison below looks at it.
 handlers = [logging.FileHandler(LOG_FILE, encoding="utf-8")]
-if LOG_TO_STDOUT:
+if LOG_TO_STDOUT and not _stream_is_file(sys.stderr, LOG_FILE):
     handlers.append(logging.StreamHandler())
 
 logging.basicConfig(
@@ -706,6 +731,23 @@ async def on_ready() -> None:
             bot.tree.copy_global_to(guild=guild)
             synced = await bot.tree.sync(guild=guild)
             logger.info("Synced %s slash commands to guild %s", len(synced), guild_id)
+
+            # Anything registered globally by an older build is still live in
+            # every server the bot is in -- moving the sync to a guild does not
+            # retract it. That is why commands kept appearing in servers they
+            # were never synced to. Purged through the HTTP layer rather than
+            # tree.clear_commands(guild=None): emptying the tree's global list
+            # would leave copy_global_to() with nothing to copy on a later
+            # connect, which wipes the guild's commands instead of the stale
+            # ones. Read first so a reconnect is not a needless write against
+            # a rate limit measured in writes per day.
+            stale = await bot.http.get_global_commands(bot.application_id)
+            if stale:
+                await bot.http.bulk_upsert_global_commands(bot.application_id, [])
+                logger.info(
+                    "Removed %s leftover global slash commands: %s",
+                    len(stale), ", ".join(sorted(c["name"] for c in stale)),
+                )
         else:
             synced = await bot.tree.sync()
             logger.info("Synced %s slash commands globally", len(synced))
@@ -1070,4 +1112,8 @@ def _handle_sigterm(signum, frame) -> None:
 
 if __name__ == "__main__":
     signal.signal(signal.SIGTERM, _handle_sigterm)
-    bot.run(TOKEN)
+    # log_handler=None stops discord.py installing a stderr handler of its own
+    # on top of the one configured above. Its records propagate to the root
+    # logger either way, so letting it add that handler meant every
+    # discord.* line was written twice in two different formats.
+    bot.run(TOKEN, log_handler=None)
