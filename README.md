@@ -275,6 +275,40 @@ Options: `--size` (max dimension), `--max-bytes` (byte budget), `--force`,
 
 `emoji_src/` and `emoji_out/` are gitignored.
 
+## Emoji upload (`tools/emoji_upload.py`)
+
+The other half of the converter: it puts the finished files in the server, so
+adding a batch of emoji is not one trip through Server Settings per file.
+
+```bash
+python3 tools/emoji_upload.py                  # report slots, upload nothing
+python3 tools/emoji_upload.py emoji_out/       # upload the folder
+python3 tools/emoji_upload.py emoji_out/tenor.gif --name copium
+```
+
+```
+guild:  The Jungle  (boost tier 1)
+emoji:  87/100 used  (16 animated, 71 static)  ->  13 free
+
+  ok    :dk_surprise:  233K  <a:dk_surprise:1534980686857900193>
+  skip  :cheems:  already in The Jungle
+  FAIL  :toobig:  293K exceeds Discord's 256K  (run it through tools/emojify.py)
+```
+
+Credentials come from `.env`. It uses the bot's own token, which needs
+**Manage Expressions** in the target server; `DISCORD_GUILD_ID` is the default
+target and `--guild <id>` overrides it. **Check which server you are pointing
+at** — the token is usually in more than one, and `DISCORD_GUILD_ID` locally
+may not be the one you mean. `--list` prints every guild the token can see,
+with ids.
+
+Names already taken are skipped rather than duplicated (Discord permits two
+emoji with one name; telling them apart afterwards is miserable). `--dry-run`
+shows the plan, `--force` overrides the skips. Emoji creation is rate limited
+hard, so a large batch pauses when Discord says to instead of failing halfway.
+
+Standard library only — nothing is added to `requirements.txt`.
+
 ## Get a Discord Bot Token
 1. Go to https://discord.com/developers/applications
 2. Click **New Application** and give it a name.
