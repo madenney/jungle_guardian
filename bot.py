@@ -54,6 +54,12 @@ LINK_IMAGE_WINDOW_SECONDS = 60
 LINK_IMAGE_COUNT = 7
 EVERYONE_WINDOW_SECONDS = 60 * 60 * 24
 EVERYONE_COUNT = 2
+# Discord has no read-only view of the ban list: reading it needs the same
+# Ban Members permission that banning does.
+_BAN_PERMISSION_HINT = (
+    "I need the **Ban Members** permission to read the ban list. "
+    "Grant it to the Jungle Guardian role in Server Settings → Roles."
+)
 LINK_REGEX = re.compile(r"(https?://\S+|www\.\S+)", re.IGNORECASE)
 EVERYONE_REGEX = re.compile(r"@everyone\b", re.IGNORECASE)
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff"}
@@ -297,9 +303,13 @@ def _chunk_text(text: str, limit: int = MAX_MESSAGE_LENGTH) -> list[str]:
 async def _send_long_response(
     interaction: discord.Interaction, text: str, *, ephemeral: bool = False
 ) -> None:
-    chunks = _chunk_text(text)
-    if not chunks:
-        await interaction.response.send_message("No content to display.", ephemeral=ephemeral)
+    chunks = _chunk_text(text) or ["No content to display."]
+
+    # A deferred interaction has already been acknowledged, so the first chunk
+    # has to go through followup like the rest of them.
+    if interaction.response.is_done():
+        for chunk in chunks:
+            await interaction.followup.send(chunk, ephemeral=ephemeral)
         return
 
     await interaction.response.send_message(chunks[0], ephemeral=ephemeral)
@@ -888,6 +898,82 @@ async def score_command(
         lines.append(f"{name} — {timeouts} {label}, next: {_format_duration(next_timeout)}{ext_marker}")
 
     await _send_long_response(interaction, "\n".join(lines))
+
+
+def _is_ban_moderator(interaction: discord.Interaction) -> bool:
+    perms = getattr(interaction.user, "guild_permissions", None)
+    return bool(perms and (perms.ban_members or perms.manage_guild))
+
+
+def _format_ban(entry: discord.BanEntry) -> str:
+    reason = (entry.reason or "").strip() or "no reason recorded"
+    return f"`{entry.user.id}`  **{entry.user}** — {reason}"
+
+
+@bot.tree.command(name="bans", description="List banned users, or look one up.")
+@app_commands.describe(search="A user ID, or part of a name")
+async def bans_command(interaction: discord.Interaction, search: str | None = None) -> None:
+    if interaction.guild is None:
+        await interaction.response.send_message("Use this command in a server.", ephemeral=True)
+        return
+    if not _is_ban_moderator(interaction):
+        await interaction.response.send_message(
+            "You need Ban Members or Manage Server to use this.", ephemeral=True
+        )
+        return
+
+    # Always ephemeral: who is banned and why is moderator business, and this
+    # is easy to run in a public channel by accident.
+    await interaction.response.defer(ephemeral=True)
+    guild = interaction.guild
+    search = (search or "").strip()
+
+    # A banned user is by definition not in the guild, so Discord's user picker
+    # will not offer them. An ID goes straight to the single-ban endpoint;
+    # anything else is matched against the names in the full list.
+    if search.isdigit():
+        try:
+            entry = await guild.fetch_ban(discord.Object(id=int(search)))
+        except discord.NotFound:
+            await interaction.followup.send(f"`{search}` is not banned.", ephemeral=True)
+            return
+        except discord.Forbidden:
+            await interaction.followup.send(_BAN_PERMISSION_HINT, ephemeral=True)
+            return
+        except discord.HTTPException as exc:
+            await interaction.followup.send(f"Could not check that ID: {exc}", ephemeral=True)
+            return
+        await interaction.followup.send(_format_ban(entry), ephemeral=True)
+        return
+
+    try:
+        entries = [entry async for entry in guild.bans(limit=None)]
+    except discord.Forbidden:
+        await interaction.followup.send(_BAN_PERMISSION_HINT, ephemeral=True)
+        return
+    except discord.HTTPException as exc:
+        await interaction.followup.send(f"Could not read the ban list: {exc}", ephemeral=True)
+        return
+
+    if search:
+        needle = search.casefold()
+        entries = [e for e in entries if needle in str(e.user).casefold()]
+        if not entries:
+            await interaction.followup.send(
+                f"No ban matches '{search}'.", ephemeral=True
+            )
+            return
+        header = f"**{len(entries)} ban(s) matching '{search}'**"
+    elif not entries:
+        await interaction.followup.send(f"No one is banned in {guild.name}.", ephemeral=True)
+        return
+    else:
+        header = f"**{len(entries)} ban(s) in {guild.name}**"
+
+    entries.sort(key=lambda entry: str(entry.user).casefold())
+    lines = [header, ""]
+    lines.extend(_format_ban(entry) for entry in entries)
+    await _send_long_response(interaction, "\n".join(lines), ephemeral=True)
 
 
 @bot.tree.command(name="members", description="Show the member count and how it has moved.")
