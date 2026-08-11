@@ -30,11 +30,21 @@ venv/
 env/
 .pytest_cache/
 
-# Emoji working directories (tools/emojify.py). Deliberately not committed:
-# the server deploy is a hard reset of this repo, and there is no reason to
-# ship a pile of gifs to the bot host.
+# Emoji, sticker and gif working directories. Deliberately not committed: the
+# server deploy is a hard reset of this repo, and there is no reason to ship a
+# pile of gifs to the bot host.
+#
+# emoji_src/emoji_out are tools/emojify.py's in and out trays; sticker_out
+# holds 320x320 sticker builds. The gif_* folders are downloaded candidate
+# batches to pick from, with *_scores.json the legibility ranking beside them.
 emoji_src/
 emoji_out/
+sticker_out/
+gif_candidates/
+gif_candidates_2/
+gif_angry/
+gif_pool/
+*_scores.json
 
 # Editor/OS
 .vscode/
