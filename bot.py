@@ -14,6 +14,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 import census
+import kotj
 import voice_gate
 
 try:
@@ -1020,6 +1021,113 @@ async def members_command(interaction: discord.Interaction) -> None:
         lines.append("\nNo history recorded yet.")
 
     await interaction.response.send_message("\n".join(lines))
+
+
+_EVENT_STATUS = {
+    "signup": "sign-ups open",
+    "locked": "sign-ups closed",
+    "active": "in progress",
+    "complete": "finished",
+}
+
+
+def _format_event_start(value: str | None) -> str | None:
+    """`starts_at` as a Discord timestamp, so each viewer sees their own zone.
+
+    kotj sends ISO-8601 UTC ("2026-08-18T02:00:00.000Z"). Anything it cannot
+    parse is dropped rather than guessed at -- a wrong start time is worse than
+    no start time on a tournament night.
+    """
+    if not value:
+        return None
+    try:
+        # fromisoformat only learned to accept a trailing Z in 3.11, and the
+        # README promises 3.10.
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return f"<t:{int(parsed.timestamp())}:R>"
+
+
+def _render_entrants(data: dict) -> str:
+    event = data.get("event") or {}
+    people = data.get("entrants") or []
+
+    name = str(event.get("name") or "Current event")
+    raw_status = str(event.get("status") or "")
+    status = _EVENT_STATUS.get(raw_status, raw_status or "unknown")
+
+    # kotj sends both counts; falling back to the list keeps the command
+    # working against an older payload rather than reporting nothing.
+    total = data.get("count")
+    if not isinstance(total, int):
+        total = len(people)
+    checked = data.get("checked_in")
+    if not isinstance(checked, int):
+        checked = sum(1 for person in people if person.get("checked_in"))
+
+    lines = [f"**{discord.utils.escape_markdown(name)}** — {status}"]
+
+    counts = f"{total} entered"
+    # Check-in only means something once somebody has done it. During sign-ups
+    # every entrant is 0, and "0 checked in" reads like a fault.
+    if checked:
+        counts += f" · {checked} checked in"
+    lines.append(counts)
+
+    when = _format_event_start(event.get("starts_at"))
+    if when:
+        lines.append(f"Starts {when}")
+
+    if not people:
+        lines.append("\nNobody has entered yet.")
+        return "\n".join(lines)
+
+    # kotj already orders by seed then entry time, so the list is printed as it
+    # arrives instead of being re-sorted into a different answer.
+    seeds = [person["seed"] for person in people if person.get("seed") is not None]
+    width = len(str(max(seeds))) if seeds else 1
+
+    lines.append("")
+    for person in people:
+        seed = person.get("seed")
+        label = str(seed) if seed is not None else "-"
+        tag = discord.utils.escape_markdown(str(person.get("tag") or "?"))
+        tick = " ✓" if checked and person.get("checked_in") else ""
+        lines.append(f"`{label:>{width}}` {tag}{tick}")
+
+    return "\n".join(lines)
+
+
+@bot.tree.command(name="entrants", description="Show who is entered in the current junglemelee.com event.")
+async def entrants_command(interaction: discord.Interaction) -> None:
+    # Open to everyone and posted publicly, like /bans. This is the list of
+    # people playing tonight's public tournament and it is already on
+    # junglemelee.com, so gating it would only mean one person relaying it.
+    #
+    # The config check happens before the defer on purpose: a public defer
+    # forces every later reply to be public too, and a missing-token notice
+    # belongs to whoever runs the bot, not to the channel.
+    if not kotj.enabled():
+        await interaction.response.send_message(
+            "The tournament site link is not configured (KOTJ_MACHINE_TOKEN).",
+            ephemeral=True,
+        )
+        return
+
+    # Deferred because this is an HTTP round trip, and public so the roster
+    # lands in the channel -- which means every reply after this must be public
+    # too, or the "thinking" placeholder is stranded with the answer hidden.
+    await interaction.response.defer()
+    try:
+        data = await kotj.entrants()
+    except kotj.KotjError as exc:
+        await interaction.followup.send(exc.friendly)
+        return
+
+    await _send_long_response(interaction, _render_entrants(data))
 
 
 def _is_voice_moderator(interaction: discord.Interaction) -> bool:

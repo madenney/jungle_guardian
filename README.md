@@ -118,6 +118,10 @@ which the bot does not request.
 - `/bans` reports the number of people banned from the server, and nothing
   else. Anyone can run it and the count is posted publicly in the channel —
   it is a single number that names nobody.
+- `/entrants` lists who is entered in the current junglemelee.com event. Open
+  to everyone and posted publicly — it is the roster for tonight's public
+  tournament, already visible on the site. Needs the tournament site link
+  below.
 
 `/bans` needs the bot to have **Ban Members**. Discord offers no read-only
 view of the ban list, so the permission that lets Guardian read it is the same
@@ -131,6 +135,49 @@ replies, so a reported `0` always means zero and never "could not look".
 Slash command updates can take a while to appear globally. For faster updates
 in a single server, set `DISCORD_GUILD_ID` in `.env` and restart the bot to
 sync commands to that guild.
+
+## Tournament site link (`/entrants`)
+
+Reads the current event's entrant list from kotj, the Node app behind
+junglemelee.com. Both run on the same EC2 box, so the request goes over
+loopback and never touches the network.
+
+```ini
+KOTJ_API_URL=http://127.0.0.1:3003
+KOTJ_MACHINE_TOKEN=<machine token>
+KOTJ_TIMEOUT_SECONDS=5
+```
+
+Only `KOTJ_MACHINE_TOKEN` is required; leaving it empty disables `/entrants`,
+which then replies privately that it is not configured rather than failing in
+the channel. `KOTJ_API_URL` only needs changing to point at a dev server.
+
+Mint the token in the **kotj** repo, not this one:
+
+```bash
+node scripts/mint-machine-token.mjs
+```
+
+It grants `/api/machine/*` and nothing else — no chat, no user identity, no
+guild membership. Guardian uses exactly one route from it:
+
+```
+GET /api/machine/entrants?event=current
+```
+
+which is display-only at the database layer: the query selects just
+tag/seed/checked_in, so Slippi connect codes and user ids are never sent and
+never held here. kotj also skips its "stream tool connected" liveness stamp on
+this route, so a Discord command cannot make the ops dashboard think the Melee
+Stream Tool is running.
+
+Every failure mode gets its own reply, so an empty bracket can never be
+confused with an outage — "no event running", "site did not answer in time",
+"could not reach the site", "credentials rejected", and "the site does not have
+the entrants endpoint yet" (a kotj build older than the endpoint).
+
+> Bumping `MACHINE_TOKEN_KID` in kotj's env to revoke the stream tool's token
+> revokes Guardian's too — the check is global. Re-mint both.
 
 ## Voice Gate (junglemelee.com)
 

@@ -9,6 +9,7 @@ A Discord moderation bot for the Jungle Melee server. Two mostly independent con
 - **`bot.py`** — watches messages, matches them against rules in `rules.json`, applies escalating timeouts persisted in `score.json`.
 - **`census.py`** — a daily member-count snapshot into `census.json`. Fully independent of the other two.
 - **`voice_gate.py`** — a loopback-only HTTP endpoint that lets junglemelee.com mute/unmute members in the commentary voice channel based on whether they have the stream fullscreen. Same process, same gateway connection, separate module.
+- **`kotj.py`** — a read-only client for junglemelee.com's machine API, backing `/entrants`. The other direction of the voice-gate relationship: there the site calls in, here the bot calls out.
 
 ## Commands
 
@@ -57,6 +58,20 @@ Commentary channels are created per event and deleted afterwards, so `channel_id
 The manual-mute rule has a deliberate asymmetry worth understanding before changing it: an unmute *over HTTP* respects a mute the bot didn't apply, but an unmute *on join* overrides it. Server mutes persist across sessions, so a mute observed at join time is far more likely to be the bot's own leftover state than a fresh mod action — and a silently stuck viewer is the worse failure.
 
 Fail-open is what makes in-memory state acceptable: `shutdown()` clears everything, `start()` resets the fixed channel if one is configured, and `handle_join` catches whatever slipped through. The SIGTERM handler in `bot.py` exists solely so `systemctl stop` routes through `Guardian.close()` rather than killing the process with people still muted.
+
+## Tournament site link
+
+`kotj.py` reads one route on junglemelee.com's Node app — `GET /api/machine/entrants?event=current` — over loopback, since both processes share a box. It never writes.
+
+The interesting parts are all about **not lying to the channel**:
+
+- **Every failure gets its own message.** A command that could not distinguish "no event scheduled" from "the site is down" would announce an empty bracket on a night the box was unreachable. `KotjError` carries a `friendly` line per case, including a 404 on the *route* (a kotj build older than the endpoint) as distinct from a 404 meaning `no_current_event`.
+- **The config check happens before `defer()`.** A public defer forces every later reply to be public too, so a missing-token notice would land in the channel; checking first lets it stay ephemeral. Same reasoning as `/bans`.
+- **Missing token disables the command** rather than erroring, mirroring how an empty `VOICE_GATE_TOKEN` disables the gate.
+
+Two things kotj does on its side that matter here, and would be easy to undo by accident: its query selects only `tag`/`seed`/`checked_in`, so Slippi codes never reach this process at all; and it skips its stream-tool liveness stamp on this route, so `/entrants` cannot make the ops dashboard report the Melee Stream Tool as connected. The heavier `/api/machine/state` has neither property — don't switch to it for convenience.
+
+Entrants are printed in the order kotj returns them (seed, then entry time). Re-sorting here would mean two orderings of the same bracket.
 
 ## Census
 
