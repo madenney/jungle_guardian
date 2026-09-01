@@ -185,7 +185,8 @@ When somebody enters the bracket, kotj POSTs to Guardian and it says so in
 Discord:
 
 ```
-Bobby signed up for KOTJ#3
+New sign up: Bobby
+- total entrants: 12
 ```
 
 and when several arrive together:
@@ -195,11 +196,14 @@ and when several arrive together:
 - alice
 - under_score
 - carl
+- total entrants: 15
 ```
 
-The event name is printed exactly as kotj sends it, so the bracket is not
-called one thing on the site and another in Discord on the same night. A push
-without a name still posts, just without the "for ..." part.
+The count comes from kotj, which already knows it — Guardian never fetches the
+roster to find out, which would be an extra round trip racing the write that
+triggered the call. If the field is absent the line is dropped rather than
+guessed at, since a wrong headcount is worse than none. The event name kotj
+sends is not printed: the channel runs one bracket at a time.
 
 ```ini
 KOTJ_ANNOUNCE_CHANNEL_ID=<channel to post in>
@@ -211,7 +215,8 @@ Unset means the feature is off (logged at startup); nothing else changes.
 POST http://127.0.0.1:8787/kotj/signup
 Authorization: Bearer <VOICE_GATE_TOKEN>
 
-{ "event": { "id": 3, "name": "KOTJ#3" },
+{ "event":    { "id": 3, "name": "KOTJ#3" },
+  "count":    12,
   "entrants": [ { "id": 41, "tag": "bobby" } ] }
 ```
 
