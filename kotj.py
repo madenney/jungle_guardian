@@ -20,14 +20,33 @@ command can never make the ops dashboard claim the stream tool is running.
 
 Leaving KOTJ_MACHINE_TOKEN unset disables the feature, the same way an empty
 VOICE_GATE_TOKEN disables the voice gate.
+
+The module also serves the OTHER direction -- kotj pushing signups in, so the
+bot can announce them -- at the bottom of this file. Both halves of the site
+relationship live here; the socket they arrive on belongs to loopback.py.
 """
 import asyncio
 import logging
 import os
 
 import aiohttp
+import discord
+from aiohttp import web
+
+import loopback
 
 logger = logging.getLogger("guardian.kotj")
+
+# A single POST from kotj should not be able to make the bot post an unbounded
+# wall of names, however the site's own batching behaves.
+MAX_SIGNUP_BATCH = 100
+
+
+def _int_env(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, ""))
+    except (TypeError, ValueError):
+        return default
 
 # Loopback by default: kotj listens on 127.0.0.1 and both processes share a box,
 # so the request never touches the network. Overridable only for local testing
@@ -113,3 +132,118 @@ def _explain(status: int, error: str | None) -> str:
         # which means the running kotj build predates the endpoint.
         return "The tournament site does not have the entrants endpoint yet."
     return f"The tournament site returned an error ({status})."
+
+
+# --- Inbound: signup announcements ------------------------------------------
+# The other direction. kotj POSTs here the moment somebody enters the bracket,
+# and Guardian says so in Discord. Served off the shared loopback socket (see
+# loopback.py), so the site authenticates with the token it already holds.
+
+ANNOUNCE_CHANNEL_ID = _int_env("KOTJ_ANNOUNCE_CHANNEL_ID", 0)
+
+# (event_id, entrant_id) already announced. kotj is fire-and-forget on its
+# side, so a retry after a timeout it never saw the answer to is a normal
+# event, not an error -- this is what stops that becoming a second message.
+# Reset when the event changes, which is the only unbounded direction.
+_announced: set[tuple[int, int]] = set()
+_announced_event: int | None = None
+
+# Background posts, held so the event loop cannot garbage-collect a task
+# mid-flight (asyncio only keeps weak references to running tasks).
+_tasks: set = set()
+
+
+def announces() -> bool:
+    return bool(ANNOUNCE_CHANNEL_ID)
+
+
+def _fresh(event_id: int, entrants: list[dict]) -> list[dict]:
+    """Entrants not already announced for this event, in arrival order."""
+    global _announced_event
+    if event_id != _announced_event:
+        _announced.clear()
+        _announced_event = event_id
+
+    fresh = []
+    for entrant in entrants:
+        tag = str(entrant.get("tag") or "").strip()
+        if not tag:
+            continue
+        raw = entrant.get("id")
+        try:
+            key = (event_id, int(raw))
+        except (TypeError, ValueError):
+            # No usable id: announce it rather than drop it, and accept that a
+            # retry could duplicate. A missing name is worse than a repeat.
+            fresh.append({"tag": tag})
+            continue
+        if key in _announced:
+            continue
+        _announced.add(key)
+        fresh.append({"tag": tag})
+    return fresh
+
+
+def render_signups(entrants: list[dict]) -> str:
+    """One line for one person, a multi-line post for a burst."""
+    names = [discord.utils.escape_markdown(e["tag"]) for e in entrants]
+    if len(names) == 1:
+        return f"**{names[0]}** signed up"
+    # Hyphens escaped for the same reason /entrants escapes them: Discord turns
+    # a line opening with "- " into its own indented bullet list.
+    lines = [f"**{len(names)} signed up**"]
+    lines.extend(f"\\- {name}" for name in names)
+    return "\n".join(lines)
+
+
+async def _post_signups(bot, entrants: list[dict]) -> None:
+    channel = bot.get_channel(ANNOUNCE_CHANNEL_ID)
+    if channel is None:
+        try:
+            channel = await bot.fetch_channel(ANNOUNCE_CHANNEL_ID)
+        except Exception:
+            logger.exception("Signup channel %s is unreachable", ANNOUNCE_CHANNEL_ID)
+            return
+    try:
+        await channel.send(render_signups(entrants))
+    except Exception:
+        logger.exception("Could not post %s signup(s)", len(entrants))
+
+
+async def _handle_signup(request):
+    body, error = await loopback.read_json(request)
+    if error is not None:
+        return error
+
+    event = body.get("event") or {}
+    try:
+        event_id = int(event.get("id"))
+    except (TypeError, ValueError):
+        return web.json_response({"ok": False, "error": "event_id_required"}, status=400)
+
+    entrants = body.get("entrants")
+    if not isinstance(entrants, list) or not entrants:
+        return web.json_response({"ok": False, "error": "entrants_required"}, status=400)
+    entrants = [e for e in entrants if isinstance(e, dict)][:MAX_SIGNUP_BATCH]
+
+    fresh = _fresh(event_id, entrants)
+    if not fresh:
+        # Every one was a duplicate. That is a success: kotj retried and we
+        # already said it.
+        return web.json_response({"ok": True, "announced": 0, "duplicates": len(entrants)})
+
+    if not announces():
+        logger.info("Signup announcements off; dropped %s (set KOTJ_ANNOUNCE_CHANNEL_ID)", len(fresh))
+        return web.json_response({"ok": True, "announced": 0, "error": "no_channel"})
+
+    # Answered before the message is sent, on purpose. kotj calls this on the
+    # path where somebody just clicked "enter", and must never wait on the
+    # Discord API to finish.
+    task = asyncio.create_task(_post_signups(request.app["bot"], fresh))
+    _tasks.add(task)
+    task.add_done_callback(_tasks.discard)
+    return web.json_response({"ok": True, "announced": len(fresh)}, status=202)
+
+
+def routes() -> list:
+    return [web.post("/kotj/signup", _handle_signup)]

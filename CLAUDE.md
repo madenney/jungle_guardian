@@ -9,6 +9,7 @@ A Discord moderation bot for the Jungle Melee server. Two mostly independent con
 - **`bot.py`** — watches messages, matches them against rules in `rules.json`, applies escalating timeouts persisted in `score.json`.
 - **`census.py`** — a daily member-count snapshot into `census.json`. Fully independent of the other two.
 - **`voice_gate.py`** — a loopback-only HTTP endpoint that lets junglemelee.com mute/unmute members in the commentary voice channel based on whether they have the stream fullscreen. Same process, same gateway connection, separate module.
+- **`loopback.py`** — the one HTTP server the site calls into (`127.0.0.1:8787`). Owns the bind, the shared bearer check and `/health`; the routes belong to the concerns, and `bot.py` composes them.
 - **`kotj.py`** — a read-only client for junglemelee.com's machine API, backing `/entrants`. The other direction of the voice-gate relationship: there the site calls in, here the bot calls out.
 
 ## Commands
@@ -70,6 +71,12 @@ The interesting parts are all about **not lying to the channel**:
 - **Missing token disables the command** rather than erroring, mirroring how an empty `VOICE_GATE_TOKEN` disables the gate.
 
 Two things kotj does on its side that matter here, and would be easy to undo by accident: its query selects only `tag`/`seed`/`checked_in`, so Slippi codes never reach this process at all; and it skips its stream-tool liveness stamp on this route, so `/entrants` cannot make the ops dashboard report the Melee Stream Tool as connected. The heavier `/api/machine/state` has neither property — don't switch to it for convenience.
+
+**The signup announcement is the inbound half** of the same relationship: kotj POSTs `/kotj/signup` when someone enters and Guardian posts a line in the channel. Three things about it are load-bearing:
+
+- **It answers 202 before sending the Discord message.** kotj calls this on the path where a player just clicked *enter*; making that request wait on the Discord API would put Guardian's latency inside somebody's signup. kotj is fire-and-forget on its side for the same reason.
+- **Dedupe is by `(event id, entrant id)`**, which is why the push carries an entrant id even though the roster endpoint deliberately has none. A retry kotj never saw the answer to is normal, not an error.
+- **It is served off `loopback.py`, not `voice_gate`.** The gate's own `_read_body` enforces its `_enabled` flag, so anything reusing it inherits the mute gate's on/off switch — `/unmuteall` would silently stop signup announcements, and nothing would connect those two facts. `loopback.read_json` checks auth and nothing else. There is a test for exactly this.
 
 Entrants are printed in the order kotj returns them (seed, then entry time). Re-sorting here would mean two orderings of the same bracket.
 

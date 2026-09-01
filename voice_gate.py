@@ -1,13 +1,13 @@
-import hmac
 import logging
 import os
 
 import discord
 from aiohttp import web
 
+import loopback
+
 logger = logging.getLogger("guardian.voice_gate")
 
-HOST = "127.0.0.1"  # loopback only; never bind 0.0.0.0 on a public box
 MAX_BATCH = 100
 DEFAULT_REASON = "junglemelee voice gate"
 
@@ -17,10 +17,6 @@ def _int_env(name: str, default: int) -> int:
         return int(os.getenv(name, ""))
     except (TypeError, ValueError):
         return default
-
-
-TOKEN = os.getenv("VOICE_GATE_TOKEN", "")
-PORT = _int_env("VOICE_GATE_PORT", 8787)
 
 # Optional fallback for a fixed commentary channel. Events that spin up a fresh
 # channel each time should send channel_id in the request instead.
@@ -36,11 +32,12 @@ _desired: dict[tuple[int, int], tuple[int, bool]] = {}
 _bot_muted: set[tuple[int, int]] = set()
 
 _enabled = True
-_runner: web.AppRunner | None = None
 
 
 def is_configured() -> bool:
-    return bool(TOKEN)
+    # The socket and its token belong to loopback now; the gate is configured
+    # exactly when the server it is served from is.
+    return loopback.is_configured()
 
 
 def is_enabled() -> bool:
@@ -245,13 +242,6 @@ async def clear_all(bot: discord.Client, reason: str = "voice gate cleared") -> 
     return cleared
 
 
-def _authorized(request: web.Request) -> bool:
-    scheme, _, value = request.headers.get("Authorization", "").partition(" ")
-    if scheme != "Bearer" or not value:
-        return False
-    return hmac.compare_digest(value, TOKEN)
-
-
 def _channel_from_body(body: dict) -> int | None:
     raw = body.get("channel_id")
     if raw is None:
@@ -263,16 +253,17 @@ def _channel_from_body(body: dict) -> int | None:
 
 
 async def _read_body(request: web.Request) -> tuple[dict | None, web.Response | None]:
-    if not _authorized(request):
-        return None, web.json_response({"ok": False, "error": "unauthorized"}, status=401)
+    """Auth and body parsing, plus the gate's own on/off switch.
+
+    The `_enabled` check is what makes this different from `loopback.read_json`
+    and why it stays here: `/unmuteall` turns the gate off, and only the voice
+    routes should go quiet when it does.
+    """
+    body, error = await loopback.read_json(request)
+    if error is not None:
+        return None, error
     if not _enabled:
         return None, web.json_response({"ok": False, "error": "gate_disabled"}, status=503)
-    try:
-        body = await request.json()
-    except Exception:
-        return None, web.json_response({"ok": False, "error": "invalid_json"}, status=400)
-    if not isinstance(body, dict):
-        return None, web.json_response({"ok": False, "error": "body_must_be_object"}, status=400)
     return body, None
 
 
@@ -324,49 +315,33 @@ async def _handle_clear(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "cleared": cleared})
 
 
-async def _handle_health(request: web.Request) -> web.Response:
-    bot = request.app["bot"]
-    return web.json_response(
-        {
-            "ok": True,
-            "ready": bot.is_ready(),
-            "enabled": _enabled,
-            "default_channel_id": str(CHANNEL_ID) if CHANNEL_ID else None,
-            "tracked": len(_desired),
-            "muted": len(_bot_muted),
-        }
-    )
+def routes() -> list:
+    """The gate's own routes, for bot.py to hand to the loopback server."""
+    return [
+        web.post("/voice/state", _handle_state),
+        web.post("/voice/clear", _handle_clear),
+    ]
+
+
+def health_snapshot() -> dict:
+    """The gate's contribution to /health.
+
+    Keep these key names: scripts/guardian-deploy reads them, so renaming one
+    breaks `guardian-deploy health` on a box that has not been updated.
+    """
+    return {
+        "enabled": _enabled,
+        "default_channel_id": str(CHANNEL_ID) if CHANNEL_ID else None,
+        "tracked": len(_desired),
+        "muted": len(_bot_muted),
+    }
 
 
 async def start(bot: discord.Client) -> None:
-    global _runner
-    if _runner is not None:
-        return
+    """Post-bind startup for the gate itself; loopback owns the socket."""
     if not is_configured():
         logger.warning("Voice gate disabled: set VOICE_GATE_TOKEN to enable it")
         return
-
-    app = web.Application()
-    app["bot"] = bot
-    app.add_routes(
-        [
-            web.post("/voice/state", _handle_state),
-            web.post("/voice/clear", _handle_clear),
-            web.get("/health", _handle_health),
-        ]
-    )
-
-    runner = web.AppRunner(app)
-    await runner.setup()
-    try:
-        await web.TCPSite(runner, HOST, PORT).start()
-    except OSError as exc:
-        logger.error("Voice gate failed to bind %s:%s: %s", HOST, PORT, exc)
-        await runner.cleanup()
-        return
-
-    _runner = runner
-    logger.info("Voice gate listening on http://%s:%s", HOST, PORT)
 
     # Fail open: nobody should still be muted from a previous run. Only covers
     # the fixed channel; per-event mutes are cleared by handle_join instead.
@@ -377,7 +352,9 @@ async def start(bot: discord.Client) -> None:
 
 
 async def shutdown(bot: discord.Client) -> None:
-    global _runner
+    # Unmute only; the socket is closed by loopback.shutdown(). This still has
+    # to run before the process dies, which is what the SIGTERM handler in
+    # bot.py exists for -- otherwise `systemctl stop` leaves people muted.
     if is_configured():
         try:
             cleared = await clear_all(bot, "voice gate shutting down")
@@ -385,7 +362,3 @@ async def shutdown(bot: discord.Client) -> None:
                 logger.info("Shutdown unmuted %s member(s)", cleared)
         except Exception:
             logger.exception("Voice gate shutdown unmute failed")
-
-    if _runner is not None:
-        await _runner.cleanup()
-        _runner = None

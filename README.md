@@ -179,10 +179,46 @@ the entrants endpoint yet" (a kotj build older than the endpoint).
 > Bumping `MACHINE_TOKEN_KID` in kotj's env to revoke the stream tool's token
 > revokes Guardian's too — the check is global. Re-mint both.
 
+## Signup announcements
+
+When somebody enters the bracket, kotj POSTs to Guardian and it says so in
+Discord — `**bobby** signed up`, or a multi-line post if several arrive at
+once.
+
+```ini
+KOTJ_ANNOUNCE_CHANNEL_ID=<channel to post in>
+```
+
+Unset means the feature is off (logged at startup); nothing else changes.
+
+```
+POST http://127.0.0.1:8787/kotj/signup
+Authorization: Bearer <VOICE_GATE_TOKEN>
+
+{ "event": { "id": 3, "name": "KOTJ#3" },
+  "entrants": [ { "id": 41, "tag": "bobby" } ] }
+```
+
+Answers **202 before the message is sent**. kotj calls this on the path where
+somebody just clicked *enter*, so it must never wait on the Discord API — and
+kotj treats the call as fire-and-forget, meaning Guardian being down or
+restarting is invisible to whoever is signing up.
+
+`entrants` is an array so a burst can arrive in one call, capped at 100.
+Repeats are dropped by `(event id, entrant id)`, so a kotj retry cannot post a
+name twice; the reply then reports `announced: 0` with a `duplicates` count,
+which is a success rather than an error. The dedupe memory resets when the
+event id changes.
+
 ## Voice Gate (junglemelee.com)
 
 Lets the site mute/unmute members in the commentary voice channel. Guardian
 listens on loopback only; the site POSTs to it from the same box.
+
+`VOICE_GATE_TOKEN` and `VOICE_GATE_PORT` configure the whole loopback server,
+not just these routes — the signup endpoint above is served from the same
+socket with the same secret. They keep those names because the site already
+has them configured.
 
 Configure in `.env`:
 ```ini

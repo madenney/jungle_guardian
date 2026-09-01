@@ -15,6 +15,7 @@ from discord.ext import commands, tasks
 
 import census
 import kotj
+import loopback
 import voice_gate
 
 try:
@@ -100,7 +101,11 @@ intents.members = True
 class Guardian(commands.Bot):
     async def close(self) -> None:
         census.stop()
+        # Unmute first, then drop the socket: the gate needs a live gateway
+        # connection to clear mutes, and closing the listener first would only
+        # stop new requests arriving during a shutdown that is already ending.
         await voice_gate.shutdown(self)
+        await loopback.shutdown()
         await super().close()
 
 
@@ -760,7 +765,18 @@ async def on_ready() -> None:
         check_timeout_extensions.start()
         logger.info("Started timeout extension background task")
 
-    await voice_gate.start(bot)
+    # bot.py is the composition root: it binds the one loopback socket and
+    # hands it the routes each concern owns, so voice_gate and kotj never have
+    # to know about each other.
+    if await loopback.start(
+        bot,
+        routes=[*voice_gate.routes(), *kotj.routes()],
+        health=voice_gate.health_snapshot,
+    ):
+        await voice_gate.start(bot)
+        if not kotj.announces():
+            logger.info("Signup announcements off: set KOTJ_ANNOUNCE_CHANNEL_ID to enable")
+
     await census.start(bot)
 
 
