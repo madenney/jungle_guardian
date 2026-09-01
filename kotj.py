@@ -184,19 +184,26 @@ def _fresh(event_id: int, entrants: list[dict]) -> list[dict]:
     return fresh
 
 
-def render_signups(entrants: list[dict]) -> str:
+def render_signups(entrants: list[dict], event_name: str | None = None) -> str:
     """One line for one person, a multi-line post for a burst."""
     names = [discord.utils.escape_markdown(e["tag"]) for e in entrants]
+
     if len(names) == 1:
+        # The event name is printed exactly as kotj sends it. Re-casing it here
+        # would mean the bracket is called one thing on the site and another in
+        # Discord on the same night.
+        if event_name:
+            return f"**{names[0]}** signed up for {discord.utils.escape_markdown(event_name)}"
         return f"**{names[0]}** signed up"
+
     # Hyphens escaped for the same reason /entrants escapes them: Discord turns
     # a line opening with "- " into its own indented bullet list.
-    lines = [f"**{len(names)} signed up**"]
+    lines = [f"**{len(names)} new sign-ups just now:**"]
     lines.extend(f"\\- {name}" for name in names)
     return "\n".join(lines)
 
 
-async def _post_signups(bot, entrants: list[dict]) -> None:
+async def _post_signups(bot, entrants: list[dict], event_name: str | None = None) -> None:
     channel = bot.get_channel(ANNOUNCE_CHANNEL_ID)
     if channel is None:
         try:
@@ -205,7 +212,7 @@ async def _post_signups(bot, entrants: list[dict]) -> None:
             logger.exception("Signup channel %s is unreachable", ANNOUNCE_CHANNEL_ID)
             return
     try:
-        await channel.send(render_signups(entrants))
+        await channel.send(render_signups(entrants, event_name))
     except Exception:
         logger.exception("Could not post %s signup(s)", len(entrants))
 
@@ -239,7 +246,10 @@ async def _handle_signup(request):
     # Answered before the message is sent, on purpose. kotj calls this on the
     # path where somebody just clicked "enter", and must never wait on the
     # Discord API to finish.
-    task = asyncio.create_task(_post_signups(request.app["bot"], fresh))
+    name = event.get("name")
+    task = asyncio.create_task(
+        _post_signups(request.app["bot"], fresh, str(name) if name else None)
+    )
     _tasks.add(task)
     task.add_done_callback(_tasks.discard)
     return web.json_response({"ok": True, "announced": len(fresh)}, status=202)

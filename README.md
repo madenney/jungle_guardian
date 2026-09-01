@@ -182,8 +182,24 @@ the entrants endpoint yet" (a kotj build older than the endpoint).
 ## Signup announcements
 
 When somebody enters the bracket, kotj POSTs to Guardian and it says so in
-Discord — `**bobby** signed up`, or a multi-line post if several arrive at
-once.
+Discord:
+
+```
+Bobby signed up for KOTJ#3
+```
+
+and when several arrive together:
+
+```
+3 new sign-ups just now:
+- alice
+- under_score
+- carl
+```
+
+The event name is printed exactly as kotj sends it, so the bracket is not
+called one thing on the site and another in Discord on the same night. A push
+without a name still posts, just without the "for ..." part.
 
 ```ini
 KOTJ_ANNOUNCE_CHANNEL_ID=<channel to post in>
